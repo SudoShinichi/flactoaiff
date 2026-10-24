@@ -54,8 +54,9 @@ Both persist across launches. Changes apply to files enqueued after the change.
 - **Atomic publish:** convert to a temp file in `destDir`, append the ID3 chunk, then publish with `renamex_np(tmp, final, RENAME_EXCL)`.
   - The final name therefore only ever refers to a complete file, so "exists → skip" is safe.
   - If `RENAME_EXCL` fails with `EEXIST` (a concurrent conversion won), delete the temp file and report `.alreadyConverted`.
-- **Temp name:** `.<basename>.<pid>.<n>.aiff.partial`, created with `O_CREAT|O_EXCL`. `n` is a per-process counter, so concurrent writers never share a temp file.
-- **Stale cleanup:** before converting, delete any `.<basename>.<pid>.*.aiff.partial` whose PID is not a live process (crash leftovers).
+  - Volumes without `RENAME_EXCL` (exFAT, FAT32, many network shares: `ENOTSUP`/`EINVAL`) fall back to `link(tmp, final)` + `unlink(tmp)`, which is also atomic. Without hard links (exFAT), they fall back to "exists? skip : `rename`", which leaves a tiny race window, but `final` is always a complete file.
+- **Temp name:** `.flactoaiff.<pid>.<n>.partial`, created with `O_CREAT|O_EXCL`. `n` is a per-process counter, so concurrent writers never share a temp file. The name leaves out the track name, so it fits the 255-byte name limit whenever `<name>.aiff` does.
+- **Stale cleanup:** before converting, delete any `.flactoaiff.<pid>.*.partial` in the destination folder whose PID is not a live process (crash leftovers).
 - Any failure after the temp file is created deletes it.
 
 ### Output formats (compatibility modes)
@@ -80,6 +81,7 @@ A setting with three modes. `Original` is the default.
 - Recursive enumeration that skips hidden files and packages. Names starting with `.` exclude `._*` AppleDouble files.
 - Only `.flac` (case-insensitive) files become jobs; other files inside folders are ignored silently.
 - Job `destDir` = `outputFolder/<droppedFolderName>/<relative subpath>`. Directories are created only when a job starts converting; a skipped job never creates them. If the job fails, any directories it created are removed again if they are empty, so no empty folders are left behind.
+- Different folders in one drop that share a name (`A/CD1`, `B/CD1`) don't merge: the second goes to `<droppedFolderName> 2`, then ` 3`, …, like Finder (case-insensitive). Dropping the same set again maps the same way, so it skips what was converted.
 - A dropped folder with zero FLACs produces one row: `No .flac files found`.
 - A dropped single non-FLAC file still produces `Skipped — not a .flac file`.
 - Aliases are resolved, as today.
@@ -124,7 +126,7 @@ FlacToAiff --convert [--format original|max48|cd] <file-or-folder>... <outputDir
 Existing checks stay, except check 4 (auto-rename), which becomes a duplicate check. New or changed checks:
 
 1. **Duplicate:** a second conversion of the same file prints `SKIP`, exits 0, and leaves exactly one AIFF.
-2. **No broken outputs:** a corrupt FLAC leaves no `.aiff` and no `*.partial`. A planted stale `.tone.99999.0.aiff.partial` (dead PID) does not block conversion and is removed.
+2. **No broken outputs:** a corrupt FLAC leaves no `.aiff` and no `*.partial`. A planted stale `.flactoaiff.99999.0.partial` (dead PID) does not block conversion and is removed.
 3. **Race:** 4 parallel conversions of one file into one dir produce exactly 1 AIFF, which passes `afinfo`. At least 3 runs print `SKIP`.
 4. **Folders:** a tree with nested FLACs, a `.jpg`, `._x.flac` and a FLAC-less subfolder produces the mirrored tree, real tracks only, and no empty dirs.
 5. **Formats:**

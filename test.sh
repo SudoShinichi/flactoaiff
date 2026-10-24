@@ -125,10 +125,10 @@ check_tags "$DEST/tagged.aiff" || { echo "FAIL: tags not carried over"; exit 1; 
 echo "12. A crash leftover (.partial of a dead process) doesn't block conversion and is removed…"
 DEST3="$TMP/stale"; mkdir -p "$DEST3"
 ( : ) & DEAD=$!; wait "$DEAD"     # a PID that is guaranteed to be gone
-echo junk > "$DEST3/.tone.$DEAD.0.aiff.partial"
+echo junk > "$DEST3/.flactoaiff.$DEAD.0.partial"
 "$BIN" --convert "$TMP/tone.flac" "$DEST3" >/dev/null
 [ -f "$DEST3/tone.aiff" ] || { echo "FAIL: conversion blocked by stale partial"; exit 1; }
-[ ! -e "$DEST3/.tone.$DEAD.0.aiff.partial" ] || { echo "FAIL: stale partial not cleaned up"; exit 1; }
+[ ! -e "$DEST3/.flactoaiff.$DEAD.0.partial" ] || { echo "FAIL: stale partial not cleaned up"; exit 1; }
 
 echo "13. Output formats: max48 / cd / original, plus bad --format…"
 say -o "$TMP/hr96.aiff" --data-format=BEI24@96000 "high resolution"
@@ -198,6 +198,34 @@ for i in 0 1; do
 done
 [ "$(plutil -extract CFBundleDocumentTypes.1.LSItemContentTypes.0 raw "$PLIST")" = "public.folder" ] \
     || { echo "FAIL: folders not declared"; exit 1; }
+
+echo "19. Converting onto an exFAT volume (typical DJ USB stick) works…"
+hdiutil create -quiet -size 20m -fs ExFAT -volname FTA_EXFAT "$TMP/exfat.dmg"
+EXFAT="$TMP/exfat"; mkdir "$EXFAT"
+hdiutil attach -quiet -nobrowse -mountpoint "$EXFAT" "$TMP/exfat.dmg"
+trap 'hdiutil detach -quiet -force "$EXFAT" 2>/dev/null; rm -rf "$TMP"' EXIT
+set +e; "$BIN" --convert "$TMP/tone.flac" "$EXFAT" >/dev/null 2>"$TMP/exfat.err"; RC=$?; set -e
+[ "$RC" -eq 0 ] && [ -f "$EXFAT/tone.aiff" ] || { echo "FAIL: exFAT conversion failed"; cat "$TMP/exfat.err"; exit 1; }
+SECOND="$("$BIN" --convert "$TMP/tone.flac" "$EXFAT")"
+[ "$SECOND" = "SKIP $EXFAT/tone.aiff" ] || { echo "FAIL: exFAT re-convert should SKIP, got: $SECOND"; exit 1; }
+ls -A "$EXFAT" | grep -q "\.partial$" && { echo "FAIL: temp .partial file left on exFAT"; exit 1; }
+
+echo "20. A long name that fits as .aiff converts (temp name must not overflow NAME_MAX)…"
+LONG="$(printf 'a%.0s' {1..245})"
+cp "$TMP/tone.flac" "$TMP/$LONG.flac"
+set +e; "$BIN" --convert "$TMP/$LONG.flac" "$TMP/long" >/dev/null 2>"$TMP/long.err"; RC=$?; set -e
+[ "$RC" -eq 0 ] && [ -f "$TMP/long/$LONG.aiff" ] || { echo "FAIL: long name not converted"; cat "$TMP/long.err"; exit 1; }
+
+echo "21. Two dropped folders with the same name don't merge: the second becomes 'CD1 2'…"
+mkdir -p "$TMP/A/CD1" "$TMP/B/CD1"
+cp "$TMP/tone.flac" "$TMP/A/CD1/01.flac"
+cp "$TMP/t16.flac"  "$TMP/B/CD1/01.flac"
+SAME="$TMP/same"
+"$BIN" --convert "$TMP/A/CD1" "$TMP/B/CD1" "$SAME" >/dev/null
+fmt "$SAME/CD1/01.aiff"   | grep -q "24-bit" || { echo "FAIL: A/CD1 not in CD1"; ls -R "$SAME"; exit 1; }
+fmt "$SAME/CD1 2/01.aiff" | grep -q "16-bit" || { echo "FAIL: B/CD1 not in 'CD1 2'"; ls -R "$SAME"; exit 1; }
+AGAIN="$("$BIN" --convert "$TMP/A/CD1" "$TMP/B/CD1" "$SAME" | grep -c '^SKIP')"
+[ "$AGAIN" -eq 2 ] || { echo "FAIL: re-dropping both should skip both, got $AGAIN SKIPs"; exit 1; }
 
 echo
 echo "PASS: all checks."

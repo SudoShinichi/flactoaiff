@@ -125,8 +125,8 @@ enum Converter {
 
         let createdDirs = try createDirectories(destDir)
         do {
-            removeStalePartials(base: base, in: destDir)
-            let tmp = try reserveTemp(base: base, in: destDir)
+            removeStalePartials(in: destDir)
+            let tmp = try reserveTemp(in: destDir)
             do {
                 let source = probe(flacURL)
                 let format = outputFormat(for: source, mode: options.mode)
@@ -147,14 +147,9 @@ enum Converter {
                     try TagIO.appendID3Chunk(tag, to: tmp)
                 }
 
-                // RENAME_EXCL: never replace an AIFF another conversion published meanwhile.
-                guard renamex_np(tmp.path, final.path, UInt32(RENAME_EXCL)) == 0 else {
-                    let e = errno
-                    if e == EEXIST {
-                        try? FileManager.default.removeItem(at: tmp)
-                        return .alreadyConverted(final)
-                    }
-                    throw ConvertError.saveFailed("Could not save \(final.lastPathComponent): \(String(cString: strerror(e)))")
+                guard try publish(tmp, as: final) else {
+                    try? FileManager.default.removeItem(at: tmp)
+                    return .alreadyConverted(final)
                 }
                 return .converted(final, note: reductionNote(source, format))
             } catch {
@@ -168,6 +163,32 @@ enum Converter {
     }
 
     // MARK: - Output file helpers
+
+    /// Move the finished `tmp` to `final` without ever replacing an existing file.
+    /// Returns false if `final` already exists (another conversion published it meanwhile).
+    ///
+    /// RENAME_EXCL is atomic but only APFS/HFS+ support it; exFAT, FAT32 and many network
+    /// shares return ENOTSUP/EINVAL. There, try link() (atomic, fails with EEXIST), and on
+    /// volumes without hard links (exFAT) fall back to check-then-rename: a tiny race
+    /// window, but `final` is still always a complete file.
+    private static func publish(_ tmp: URL, as final: URL) throws -> Bool {
+        func failed(_ e: Int32) -> ConvertError {
+            .saveFailed("Could not save \(final.lastPathComponent): \(String(cString: strerror(e)))")
+        }
+        if renamex_np(tmp.path, final.path, UInt32(RENAME_EXCL)) == 0 { return true }
+        var e = errno
+        if e == EEXIST { return false }
+        guard e == ENOTSUP || e == EINVAL else { throw failed(e) }
+
+        if link(tmp.path, final.path) == 0 { unlink(tmp.path); return true }
+        e = errno
+        if e == EEXIST { return false }
+        guard e == ENOTSUP || e == EPERM || e == EINVAL else { throw failed(e) }
+
+        if FileManager.default.fileExists(atPath: final.path) { return false }
+        guard rename(tmp.path, final.path) == 0 else { throw failed(errno) }
+        return true
+    }
 
     /// Create `dir` and any missing parents. Returns the ones created, outermost first.
     private static func createDirectories(_ dir: URL) throws -> [URL] {
@@ -186,12 +207,15 @@ enum Converter {
     private static let counterLock = NSLock()
     private static var counter = 0
 
-    /// Create a fresh `.<base>.<pid>.<n>.aiff.partial` in `dir` (O_CREAT|O_EXCL), so no two
-    /// writers — in this process or another — ever share a temp file.
-    private static func reserveTemp(base: String, in dir: URL) throws -> URL {
+    private static let partialPrefix = ".flactoaiff.", partialSuffix = ".partial"
+
+    /// Create a fresh `.flactoaiff.<pid>.<n>.partial` in `dir` (O_CREAT|O_EXCL), so no two
+    /// writers — in this process or another — ever share a temp file. The name doesn't
+    /// contain the track's, so it fits NAME_MAX whenever the final `<name>.aiff` does.
+    private static func reserveTemp(in dir: URL) throws -> URL {
         while true {
             counterLock.lock(); let n = counter; counter += 1; counterLock.unlock()
-            let url = dir.appendingPathComponent(".\(base).\(getpid()).\(n).aiff.partial")
+            let url = dir.appendingPathComponent("\(partialPrefix)\(getpid()).\(n)\(partialSuffix)")
             let fd = open(url.path, O_CREAT | O_EXCL | O_WRONLY, 0o644)
             if fd >= 0 { close(fd); return url }
             let e = errno
@@ -201,12 +225,11 @@ enum Converter {
         }
     }
 
-    /// Delete `.<base>.<pid>.<n>.aiff.partial` files whose process is gone (crash leftovers).
-    private static func removeStalePartials(base: String, in dir: URL) {
-        let prefix = "." + base + ".", suffix = ".aiff.partial"
+    /// Delete `.flactoaiff.<pid>.<n>.partial` files whose process is gone (crash leftovers).
+    private static func removeStalePartials(in dir: URL) {
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return }
-        for name in names where name.hasPrefix(prefix) && name.hasSuffix(suffix) {
-            let parts = name.dropFirst(prefix.count).dropLast(suffix.count).split(separator: ".")
+        for name in names where name.hasPrefix(partialPrefix) && name.hasSuffix(partialSuffix) {
+            let parts = name.dropFirst(partialPrefix.count).dropLast(partialSuffix.count).split(separator: ".")
             guard parts.count == 2, let pid = pid_t(parts[0]), Int(parts[1]) != nil else { continue }
             if kill(pid, 0) == -1 && errno == ESRCH {
                 try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))

@@ -31,6 +31,7 @@ enum Jobs {
     /// passed on so a non-FLAC one gets reported.
     static func expand(_ inputs: [URL], into outputRoot: URL) -> [WorkItem] {
         var items: [WorkItem] = []
+        var folderNames = FolderNames()
         let fm = FileManager.default
         for input in inputs {
             var url = input
@@ -45,7 +46,7 @@ enum Jobs {
                 continue
             }
 
-            let folderOut = outputRoot.appendingPathComponent(url.lastPathComponent, isDirectory: true)
+            let folderOut = outputRoot.appendingPathComponent(folderNames.name(for: url), isDirectory: true)
             let flacs = (fm.subpaths(atPath: url.path) ?? [])
                 .filter { rel in
                     var relIsDir: ObjCBool = false
@@ -65,6 +66,25 @@ enum Jobs {
             }
         }
         return items
+    }
+
+    /// Output folder names for the folders of one drop. Different folders that share a
+    /// name (A/CD1, B/CD1) get "CD1", "CD1 2", … like Finder, instead of merging; the
+    /// same drop again maps the same way, so re-dropping skips what was converted.
+    private struct FolderNames {
+        private var byPath: [String: String] = [:]
+        private var taken: Set<String> = []   // lowercased: APFS/HFS+ are case-insensitive
+
+        mutating func name(for folder: URL) -> String {
+            let path = folder.standardizedFileURL.path
+            if let name = byPath[path] { return name }
+            let base = folder.lastPathComponent
+            var name = base, n = 2
+            while taken.contains(name.lowercased()) { name = "\(base) \(n)"; n += 1 }
+            taken.insert(name.lowercased())
+            byPath[path] = name
+            return name
+        }
     }
 
     /// Run one work item. `outputRoot` must already exist and be writable: a missing
