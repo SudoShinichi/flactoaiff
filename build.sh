@@ -25,6 +25,12 @@ swiftc -O \
 MINOS="$(otool -l "$APP_STAGE/Contents/MacOS/FlacToAiff" | awk '/minos/{print $2; exit}')"
 [ "$MINOS" = "12.0" ] || { echo "FAIL: binary minos=$MINOS, plist claims 12.0"; exit 1; }
 
+echo "Rendering icon…"
+mkdir -p "$APP_STAGE/Contents/Resources"
+swiftc -O -o "$STAGE/make-icon" scripts/make-icon.swift -framework AppKit
+"$STAGE/make-icon" "$STAGE/AppIcon.iconset"
+iconutil -c icns -o "$APP_STAGE/Contents/Resources/AppIcon.icns" "$STAGE/AppIcon.iconset"
+
 cat > "$APP_STAGE/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -37,6 +43,7 @@ cat > "$APP_STAGE/Contents/Info.plist" <<'PLIST'
     <key>CFBundleShortVersionString</key><string>1.0</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleExecutable</key><string>FlacToAiff</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>LSMinimumSystemVersion</key><string>12.0</string>
     <key>NSHighResolutionCapable</key><true/>
 </dict>
