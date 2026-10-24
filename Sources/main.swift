@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-// MARK: - Headless CLI mode (used by test.sh): --convert [--format original|max48|cd] <in.flac> <destDir>
+// MARK: - Headless CLI mode (used by test.sh): --convert [--format original|max48|cd] <file-or-folder>... <outputDir>
 
 let cliArgs = CommandLine.arguments
 func cliUsage() -> Never {
@@ -19,21 +19,21 @@ if cliArgs.count >= 2 && cliArgs[1] == "--convert" {
         options.mode = mode
         args.removeFirst(2)
     }
-    guard args.count == 2 else { cliUsage() }
-    do {
-        switch try Converter.convert(
-            flacURL: URL(fileURLWithPath: args[0]),
-            destDir: URL(fileURLWithPath: args[1], isDirectory: true),
-            options: options
-        ) {
-        case .converted(let out, _):     print("OK \(out.path)")
-        case .alreadyConverted(let out): print("SKIP \(out.path)")
+    guard args.count >= 2 else { cliUsage() }
+    let outputRoot = URL(fileURLWithPath: args.removeLast(), isDirectory: true)
+    try? FileManager.default.createDirectory(at: outputRoot, withIntermediateDirectories: true)
+    var failed = false
+    for item in Jobs.expand(args.map { URL(fileURLWithPath: $0) }, into: outputRoot) {
+        let row = Jobs.run(item, outputRoot: outputRoot, options: options)
+        switch row.kind {
+        case .converted:        print("OK \(row.output!.path)")
+        case .alreadyConverted: print("SKIP \(row.output!.path)")
+        case .skipped, .failed:
+            failed = true
+            FileHandle.standardError.write("ERROR \(row.name): \(row.detail)\n".data(using: .utf8)!)
         }
-        exit(0)
-    } catch {
-        FileHandle.standardError.write("ERROR \(error)\n".data(using: .utf8)!)
-        exit(1)
     }
+    exit(failed ? 1 : 0)
 }
 
 // MARK: - GUI

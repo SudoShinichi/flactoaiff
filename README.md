@@ -21,7 +21,8 @@ converted copies appear in your **Downloads** folder, with their metadata and co
 
 ## Features
 
-- **Drag and drop** — drop one file or a whole batch onto the window.
+- **Drag and drop** — drop files or whole folders. Folders are scanned recursively and keep
+  their structure (`Album/CD1/…`); cover images and other non-FLAC files are ignored.
 - **Lossless** — sample rate is preserved and bit depth (16, 24 or 32-bit) is matched. If the
   source depth can't be detected, the app rounds *up*, never down.
 - **Compatibility formats** (optional) — pick *CDJ: max 24-bit / 48 kHz* for CDJ-2000NXS,
@@ -91,6 +92,7 @@ appends an `ID3 ` chunk to the AIFF.
 | `Sources/main.swift` | SwiftUI drop-zone window, plus a headless `--convert` mode used by the tests |
 | `Sources/Converter.swift` | Bit-depth detection, safe output naming, `afconvert` invocation |
 | `Sources/Tags.swift` | FLAC tag/picture parsing and ID3 chunk writing |
+| `Sources/Jobs.swift` | Expands dropped files/folders into conversions and runs them |
 | `scripts/make-icon.swift` | Draws the app icon in code; rendered by `build.sh` |
 
 ## Development
@@ -106,7 +108,7 @@ input, concurrent conversions, and tag carry-over.
 A headless mode is available for scripting:
 
 ```bash
-build/FlacToAiff.app/Contents/MacOS/FlacToAiff --convert input.flac /path/to/output-dir
+build/FlacToAiff.app/Contents/MacOS/FlacToAiff --convert [--format original|max48|cd] <file-or-folder>... <output-dir>
 ```
 
 ## Troubleshooting

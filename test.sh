@@ -156,5 +156,37 @@ tag_flac "$TMP/hr96.flac" "$TMP/taggedhr.flac"
 fmt "$CDQ/taggedhr.aiff" | grep -q "44100 Hz.*16-bit" || { echo "FAIL: tagged hi-res not converted to CD format"; exit 1; }
 check_tags "$CDQ/taggedhr.aiff" || { echo "FAIL: tags lost in cd mode"; exit 1; }
 
+echo "15. Dropped folder: recursive, structure kept, junk ignored, failed subfolder removed…"
+LIB="$TMP/Album Name"
+mkdir -p "$LIB/CD1" "$LIB/CD2" "$LIB/Artwork" "$LIB/Broken"
+cp "$TMP/tone.flac" "$LIB/CD1/01 Intro.flac"
+cp "$TMP/t16.flac"  "$LIB/CD2/01 Outro.FLAC"
+cp "$TMP/tone.flac" "$LIB/top.flac"
+echo jpg  > "$LIB/Artwork/cover.jpg"
+echo junk > "$LIB/CD1/._01 Intro.flac"
+cp "$TMP/corrupt.flac" "$LIB/Broken/bad.flac"
+FOLD="$TMP/folders"
+set +e; "$BIN" --convert "$LIB" "$FOLD" >/dev/null 2>"$TMP/fold.err"; RC=$?; set -e
+[ "$RC" -eq 1 ] || { echo "FAIL: expected exit 1 (one corrupt file), got $RC"; exit 1; }
+EXPECTED="$(printf '%s\n' "Album Name" "Album Name/CD1" "Album Name/CD1/01 Intro.aiff" \
+    "Album Name/CD2" "Album Name/CD2/01 Outro.aiff" "Album Name/top.aiff" | LC_ALL=C sort)"
+[ -d "$FOLD" ] || { echo "FAIL: no output folder created for dropped folder"; exit 1; }
+ACTUAL="$(cd "$FOLD" && find . -mindepth 1 | sed 's|^\./||' | LC_ALL=C sort)"
+[ "$ACTUAL" = "$EXPECTED" ] || { echo "FAIL: folder output tree wrong"; diff <(echo "$EXPECTED") <(echo "$ACTUAL"); exit 1; }
+
+echo "16. Folder without FLACs reports it and creates nothing; several inputs in one call…"
+mkdir -p "$TMP/NoFlacs"; echo x > "$TMP/NoFlacs/readme.txt"
+set +e; "$BIN" --convert "$TMP/NoFlacs" "$FOLD" 2>"$TMP/nf.err"; RC=$?; set -e
+[ "$RC" -eq 1 ] && grep -q "No .flac files found" "$TMP/nf.err" || { echo "FAIL: empty folder not reported"; exit 1; }
+[ ! -e "$FOLD/NoFlacs" ] || { echo "FAIL: empty output folder created"; exit 1; }
+MULTI="$("$BIN" --convert "$TMP/tone.flac" "$TMP/t16.flac" "$TMP/multi" | grep -c '^OK ')"
+[ "$MULTI" -eq 2 ] || { echo "FAIL: expected 2 OK lines for two inputs, got $MULTI"; exit 1; }
+
+echo "17. Unwritable output folder fails clearly instead of writing elsewhere…"
+RO="$TMP/readonly"; mkdir "$RO"; chmod 555 "$RO"
+set +e; "$BIN" --convert "$TMP/tone.flac" "$RO" 2>"$TMP/ro.err"; RC=$?; set -e
+chmod 755 "$RO"
+[ "$RC" -eq 1 ] && grep -q "Output folder not available" "$TMP/ro.err" || { echo "FAIL: unwritable output not reported"; cat "$TMP/ro.err"; exit 1; }
+
 echo
 echo "PASS: all checks."

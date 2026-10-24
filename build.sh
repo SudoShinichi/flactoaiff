@@ -18,7 +18,7 @@ echo "Compiling…"
 swiftc -O \
     -target "$TARGET" \
     -o "$APP_STAGE/Contents/MacOS/FlacToAiff" \
-    Sources/Converter.swift Sources/Tags.swift Sources/main.swift \
+    Sources/*.swift \
     -framework AppKit -framework SwiftUI
 
 # The plist claims macOS 12; make that claim self-enforcing.

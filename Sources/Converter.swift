@@ -5,6 +5,7 @@ enum ConvertError: Error, CustomStringConvertible {
     case notFlac
     case afconvertFailed(String)
     case saveFailed(String)
+    case outputFolderUnavailable
 
     var description: String {
         switch self {
@@ -12,6 +13,8 @@ enum ConvertError: Error, CustomStringConvertible {
             return "Skipped — not a .flac file"
         case .afconvertFailed(let message), .saveFailed(let message):
             return message
+        case .outputFolderUnavailable:
+            return "Output folder not available — choose another in “Save to”"
         }
     }
 }
