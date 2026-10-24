@@ -238,5 +238,46 @@ ACTUAL="$(cd "$TMP/pkgout" && find . -mindepth 1 | sed 's|^\./||' | LC_ALL=C sor
 EXPECTED="$(printf '%s\n' "WithPackage" "WithPackage/linked.aiff" "WithPackage/real.aiff")"
 [ "$ACTUAL" = "$EXPECTED" ] || { echo "FAIL: wrong output tree (package entered or symlink skipped)"; diff <(echo "$EXPECTED") <(echo "$ACTUAL"); exit 1; }
 
+# wait_for <path> [seconds]: succeeds once <path> exists, fails after the timeout (default 20 s).
+wait_for() {
+    local i
+    for ((i = 0; i < ${2:-20} * 4; i++)); do [ -e "$1" ] && return 0; sleep 0.25; done
+    return 1
+}
+frames() { afinfo "$1" | sed -n 's/^audio packets: //p'; }   # PCM: 1 packet = 1 frame
+
+echo "23. Watch folder: a FLAC copied in converts; hidden and non-FLAC files are ignored…"
+WATCH="$TMP/watch"; WOUT="$TMP/watchout"; mkdir -p "$WATCH" "$WOUT"
+"$BIN" --watch "$WATCH" "$WOUT" > "$TMP/watch.log" 2>&1 &
+WATCHER=$!
+trap 'kill $WATCHER 2>/dev/null; hdiutil detach -quiet -force "$EXFAT" 2>/dev/null; rm -rf "$TMP"' EXIT
+sleep 1   # let the FSEvents stream start
+cp "$TMP/tone.flac" "$WATCH/new.flac"
+cp "$TMP/tone.flac" "$WATCH/.hidden.flac"
+echo x > "$WATCH/notes.txt"
+wait_for "$WOUT/new.aiff" || { echo "FAIL: watched FLAC not converted"; cat "$TMP/watch.log"; exit 1; }
+fmt "$WOUT/new.aiff" | grep -q "24-bit" || { echo "FAIL: watched output not a valid AIFF"; exit 1; }
+
+echo "24. Watch folder: a FLAC still being written converts only once complete…"
+SIZE="$(stat -f %z "$TMP/tone.flac")"; HALF=$((SIZE / 2))
+head -c "$HALF" "$TMP/tone.flac" > "$WATCH/slow.flac"
+sleep 1.5
+tail -c +$((HALF + 1)) "$TMP/tone.flac" >> "$WATCH/slow.flac"
+wait_for "$WOUT/slow.aiff" || { echo "FAIL: slowly written FLAC not converted"; cat "$TMP/watch.log"; exit 1; }
+[ "$(frames "$WOUT/slow.aiff")" = "$(frames "$WOUT/new.aiff")" ] \
+    || { echo "FAIL: converted before the file was complete"; cat "$TMP/watch.log"; exit 1; }
+
+echo "25. Watch folder: a folder moved in keeps its structure…"
+mkdir -p "$TMP/incoming/Some Album/CD2"
+cp "$TMP/t16.flac" "$TMP/incoming/Some Album/CD2/02 Track.flac"
+mv "$TMP/incoming/Some Album" "$WATCH/"
+wait_for "$WOUT/Some Album/CD2/02 Track.aiff" || { echo "FAIL: moved-in folder not converted"; ls -R "$WOUT"; cat "$TMP/watch.log"; exit 1; }
+sleep 3   # give stray events time to (wrongly) produce more work
+kill $WATCHER; wait $WATCHER 2>/dev/null || true
+[ ! -e "$WOUT/.hidden.aiff" ] && [ ! -e "$WOUT/notes.aiff" ] || { echo "FAIL: hidden/non-FLAC file converted"; exit 1; }
+grep -q '^ERROR' "$TMP/watch.log" && { echo "FAIL: watcher reported errors"; cat "$TMP/watch.log"; exit 1; }
+[ "$(grep -c '^OK' "$TMP/watch.log")" -eq 3 ] || { echo "FAIL: expected exactly 3 OK lines"; cat "$TMP/watch.log"; exit 1; }
+grep -q '^SKIP' "$TMP/watch.log" && { echo "FAIL: a watched file was handed off twice"; cat "$TMP/watch.log"; exit 1; }
+
 echo
 echo "PASS: all checks."

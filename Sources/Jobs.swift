@@ -47,16 +47,7 @@ enum Jobs {
             }
 
             let folderOut = outputRoot.appendingPathComponent(folderNames.name(for: url), isDirectory: true)
-            let walker = fm.enumerator(at: url, includingPropertiesForKeys: [.isRegularFileKey],
-                                       options: [.skipsHiddenFiles, .skipsPackageDescendants])
-            let rootDepth = url.standardizedFileURL.pathComponents.count
-            let flacs = (walker?.allObjects as? [URL] ?? [])
-                .filter { file in
-                    file.pathExtension.lowercased() == "flac"
-                        && (try? file.resolvingSymlinksInPath().resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
-                }
-                .map { $0.standardizedFileURL.pathComponents.dropFirst(rootDepth).joined(separator: "/") }
-                .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            let flacs = flacs(in: url)
             if flacs.isEmpty {
                 items.append(.note(name: url.lastPathComponent, message: "No .flac files found"))
             }
@@ -67,6 +58,32 @@ enum Jobs {
             }
         }
         return items
+    }
+
+    /// FLACs anywhere under `folder`, as sorted paths relative to it. Hidden files
+    /// (incl. AppleDouble `._x.flac`) and package contents are skipped; symlinked FLACs count.
+    static func flacs(in folder: URL) -> [String] {
+        let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey],
+                                                    options: [.skipsHiddenFiles, .skipsPackageDescendants])
+        let rootDepth = folder.standardizedFileURL.pathComponents.count
+        return (walker?.allObjects as? [URL] ?? [])
+            .filter { file in
+                file.pathExtension.lowercased() == "flac"
+                    && (try? file.resolvingSymlinksInPath().resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
+            }
+            .map { $0.standardizedFileURL.pathComponents.dropFirst(rootDepth).joined(separator: "/") }
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    /// Files from the watch folder `watchRoot`: each keeps its subfolder relative to
+    /// the watch folder, so `<watchRoot>/Album/01.flac` → `<outputRoot>/Album/01.aiff`.
+    static func watched(_ files: [URL], root watchRoot: URL, into outputRoot: URL) -> [WorkItem] {
+        let rootDepth = watchRoot.standardizedFileURL.pathComponents.count
+        return files.map { file in
+            let subdirs = file.standardizedFileURL.deletingLastPathComponent().pathComponents.dropFirst(rootDepth)
+            let dest = subdirs.reduce(outputRoot) { $0.appendingPathComponent($1, isDirectory: true) }
+            return .job(Job(source: file, destDir: dest))
+        }
     }
 
     /// Output folder names for the folders of one drop. Different folders that share a

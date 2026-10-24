@@ -1,7 +1,8 @@
 import Foundation
 
 /// The app's single conversion pipeline. Window drops, Dock drops and Finder "Open With"
-/// all feed `enqueue`; work runs serially off the main thread and rows publish as they finish.
+/// feed `enqueue`, the watch folder `enqueueWatched`; work runs serially off the main thread
+/// and rows publish as they finish.
 final class ConversionQueue: ObservableObject {
     @Published private(set) var rows: [Row] = []
     @Published private(set) var isWorking = false
@@ -19,13 +20,25 @@ final class ConversionQueue: ObservableObject {
     /// them mid-batch affects the next drop, not files already queued.
     func enqueue(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
+        submit { root in Jobs.expand(urls, into: root) }
+    }
+
+    /// FLACs from the watch folder (main thread). `quietSkips`: launch catch-up doesn't
+    /// list files that were converted before.
+    func enqueueWatched(_ files: [URL], root watchRoot: URL, quietSkips: Bool = false) {
+        guard !files.isEmpty else { return }
+        submit(quietSkips: quietSkips) { root in Jobs.watched(files, root: watchRoot, into: root) }
+    }
+
+    private func submit(quietSkips: Bool = false, _ makeItems: @escaping (URL) -> [WorkItem]) {
         let root = settings.outputFolder
         let options = ConvertOptions(mode: settings.mode)
         batchesInFlight += 1
         isWorking = true
         worker.async {
-            for item in Jobs.expand(urls, into: root) {
+            for item in makeItems(root) {
                 let row = Jobs.run(item, outputRoot: root, options: options)
+                if quietSkips && row.kind == .alreadyConverted { continue }
                 DispatchQueue.main.async { self.rows.append(row) }
             }
             DispatchQueue.main.async {
