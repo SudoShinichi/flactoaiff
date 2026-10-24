@@ -24,9 +24,15 @@ converted copies appear in your **Downloads** folder, with their metadata and co
 - **Drag and drop** — drop one file or a whole batch onto the window.
 - **Lossless** — sample rate is preserved and bit depth (16, 24 or 32-bit) is matched. If the
   source depth can't be detected, the app rounds *up*, never down.
+- **Compatibility formats** (optional) — pick *CDJ: max 24-bit / 48 kHz* for CDJ-2000NXS,
+  2000, 900NXS, 850, 350 and XDJ-1000MK2 (hi-res files are resampled: 96 → 48 kHz,
+  88.2 → 44.1 kHz), or *CD: 16-bit / 44.1 kHz* (dithered) for burning audio CDs for CD-only
+  players. Files already within limits stay bit-identical.
 - **Tags and artwork carried over** — title, artist, album, cover art and more are written
   into the AIFF as an ID3 tag, so tracks show up correctly in your library.
-- **Skips duplicates** — files that were already converted are skipped, never overwritten. Output is written to a temp file and renamed into place only when complete, so a half-written AIFF can never be mistaken for a finished one.
+- **Skips duplicates** — files that were already converted are skipped, never overwritten.
+  Output is written to a temp file and renamed into place only when complete, so a
+  half-written AIFF can never be mistaken for a finished one.
 - **No dependencies** — built on macOS's own `afconvert` audio engine. No ffmpeg, no Homebrew.
 
 ## Requirements

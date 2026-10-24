@@ -76,25 +76,28 @@ set -e
 [ "$RC" -eq 2 ] || { echo "FAIL: expected exit 2, got $RC"; exit 1; }
 grep -q "usage:" "$TMP/usage.txt" || { echo "FAIL: no usage message"; exit 1; }
 
-echo "11. FLAC tags (incl. non-ASCII) are carried into the AIFF's ID3 chunk…"
-python3 -I - "$TMP/tone.flac" "$TMP/tagged.flac" <<'PY'
+# tag_flac <src.flac> <dst.flac>: copy src, adding TITLE/ARTIST/ALBUM (non-ASCII) Vorbis comments.
+tag_flac() {
+python3 -I - "$1" "$2" <<'PY'
 import sys, struct
 src, dst = sys.argv[1:3]
 d = open(src, 'rb').read()
-# Find the end of the metadata blocks, clearing the "last block" flag as we go.
 i, out = 4, bytearray(b'fLaC')
-while True:
+while True:   # copy metadata blocks, clearing the "last block" flag
     h, n = d[i], int.from_bytes(d[i+1:i+4], 'big')
     out += bytes([h & 0x7F]) + d[i+1:i+4+n]
     i += 4 + n
     if h & 0x80: break
-vals = [b'TITLE=Song Title', b'ARTIST=Some Artist', 'ALBUM=Album \u84b8\u767c'.encode()]
+vals = [b'TITLE=Song Title', b'ARTIST=Some Artist', 'ALBUM=Album 蒸發'.encode()]
 body = struct.pack('<I', 0) + struct.pack('<I', len(vals)) + b''.join(struct.pack('<I', len(v)) + v for v in vals)
 out += bytes([0x84]) + len(body).to_bytes(3, 'big') + body + d[i:]
 open(dst, 'wb').write(out)
 PY
-"$BIN" --convert "$TMP/tagged.flac" "$DEST"
-python3 -I - "$DEST/tagged.aiff" <<'PY' || { echo "FAIL: tags not carried over"; exit 1; }
+}
+
+# check_tags <file.aiff>: exits non-zero unless the ID3 chunk holds tag_flac's tags.
+check_tags() {
+python3 -I - "$1" <<'PY'
 import sys, struct
 f = open(sys.argv[1], 'rb'); form = f.read(12); tag = None
 while (h := f.read(8)) and len(h) == 8:
@@ -107,9 +110,17 @@ frames, j = {}, 10
 while j < len(tag) and tag[j] != 0:
     fid, n = tag[j:j+4].decode(), struct.unpack('>I', tag[j+4:j+8])[0]
     frames[fid] = tag[j+10:j+10+n][1:].decode('utf-16'); j += 10 + n
-want = {'TIT2': 'Song Title', 'TPE1': 'Some Artist', 'TALB': 'Album \u84b8\u767c'}
+want = {'TIT2': 'Song Title', 'TPE1': 'Some Artist', 'TALB': 'Album 蒸發'}
 assert all(frames.get(k) == v for k, v in want.items()), frames
 PY
+}
+
+fmt() { afinfo "$1" | grep "Data format"; }
+
+echo "11. FLAC tags (incl. non-ASCII) are carried into the AIFF's ID3 chunk…"
+tag_flac "$TMP/tone.flac" "$TMP/tagged.flac"
+"$BIN" --convert "$TMP/tagged.flac" "$DEST" >/dev/null
+check_tags "$DEST/tagged.aiff" || { echo "FAIL: tags not carried over"; exit 1; }
 
 echo "12. A crash leftover (.partial of a dead process) doesn't block conversion and is removed…"
 DEST3="$TMP/stale"; mkdir -p "$DEST3"
@@ -118,6 +129,32 @@ echo junk > "$DEST3/.tone.$DEAD.0.aiff.partial"
 "$BIN" --convert "$TMP/tone.flac" "$DEST3" >/dev/null
 [ -f "$DEST3/tone.aiff" ] || { echo "FAIL: conversion blocked by stale partial"; exit 1; }
 [ ! -e "$DEST3/.tone.$DEAD.0.aiff.partial" ] || { echo "FAIL: stale partial not cleaned up"; exit 1; }
+
+echo "13. Output formats: max48 / cd / original, plus bad --format…"
+say -o "$TMP/hr96.aiff" --data-format=BEI24@96000 "high resolution"
+afconvert -f flac -d flac "$TMP/hr96.aiff" "$TMP/hr96.flac"
+say -o "$TMP/hr88.aiff" --data-format=BEI24@88200 "high resolution"
+afconvert -f flac -d flac "$TMP/hr88.aiff" "$TMP/hr88.flac"
+M48="$TMP/max48"
+for f in hr96 hr88 t16; do "$BIN" --convert --format max48 "$TMP/$f.flac" "$M48" >/dev/null; done
+fmt "$M48/hr96.aiff" | grep -q "48000 Hz.*24-bit big-endian" || { echo "FAIL: max48: 96k not → 24/48"; fmt "$M48/hr96.aiff"; exit 1; }
+fmt "$M48/hr88.aiff" | grep -q "44100 Hz.*24-bit big-endian" || { echo "FAIL: max48: 88.2k not → 24/44.1"; fmt "$M48/hr88.aiff"; exit 1; }
+fmt "$M48/t16.aiff"  | grep -q "44100 Hz.*16-bit big-endian" || { echo "FAIL: max48 altered 16/44.1"; exit 1; }
+CDQ="$TMP/cdq"
+for f in hr96 tone t16; do "$BIN" --convert --format cd "$TMP/$f.flac" "$CDQ" >/dev/null; done
+fmt "$CDQ/hr96.aiff" | grep -q "44100 Hz.*16-bit big-endian" || { echo "FAIL: cd: 24/96 not → 16/44.1"; fmt "$CDQ/hr96.aiff"; exit 1; }
+fmt "$CDQ/tone.aiff" | grep -q "44100 Hz.*16-bit big-endian" || { echo "FAIL: cd: 24/44.1 not → 16/44.1"; exit 1; }
+cmp -s "$CDQ/t16.aiff" "$DEST/t16.aiff" || { echo "FAIL: cd mode altered a 16/44.1 source"; exit 1; }
+"$BIN" --convert "$TMP/hr96.flac" "$TMP/orig" >/dev/null
+fmt "$TMP/orig/hr96.aiff" | grep -q "96000 Hz.*24-bit big-endian" || { echo "FAIL: default format resampled 96k"; exit 1; }
+set +e; "$BIN" --convert --format bogus "$TMP/tone.flac" "$TMP/orig" 2>/dev/null; RC=$?; set -e
+[ "$RC" -eq 2 ] || { echo "FAIL: unknown --format should exit 2, got $RC"; exit 1; }
+
+echo "14. Tags survive resampling + dither…"
+tag_flac "$TMP/hr96.flac" "$TMP/taggedhr.flac"
+"$BIN" --convert --format cd "$TMP/taggedhr.flac" "$CDQ" >/dev/null
+fmt "$CDQ/taggedhr.aiff" | grep -q "44100 Hz.*16-bit" || { echo "FAIL: tagged hi-res not converted to CD format"; exit 1; }
+check_tags "$CDQ/taggedhr.aiff" || { echo "FAIL: tags lost in cd mode"; exit 1; }
 
 echo
 echo "PASS: all checks."

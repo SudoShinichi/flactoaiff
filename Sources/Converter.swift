@@ -22,34 +22,99 @@ enum Outcome {
     case alreadyConverted(URL)
 }
 
+/// Output compatibility target. Raw values are the CLI `--format` names and the stored setting.
+enum OutputMode: String, CaseIterable, Identifiable {
+    case original   // lossless: depth matched, rate kept
+    case max48      // CDJ-2000NXS-class players: ≤24-bit, ≤48 kHz
+    case cd         // audio-CD burning: 16-bit / 44.1 kHz
+
+    var id: String { rawValue }
+}
+
+/// Per-conversion choices.
+struct ConvertOptions {
+    var mode: OutputMode = .original
+}
+
 /// Core FLAC → AIFF conversion logic. No UI knowledge; usable headless.
 enum Converter {
     static let afconvert = "/usr/bin/afconvert"
     static let afinfo = "/usr/bin/afinfo"
 
-    /// Detect the source PCM bit depth of a FLAC via `afinfo -x` (XML).
-    /// Returns nil when detection is impossible; callers must fail toward lossless.
-    static func detectBitDepth(_ url: URL) -> Int? {
+    /// What `afinfo` reports about a source; nil fields mean "couldn't detect".
+    struct SourceFormat {
+        let depth: Int?
+        let rate: Int?
+    }
+
+    /// Target PCM format. `rate == nil` means "keep the source rate" (no resampling).
+    struct OutputFormat: Equatable {
+        let depth: Int
+        let rate: Int?
+        let dither: Bool
+    }
+
+    /// Detect source bit depth and sample rate via one `afinfo -x` (XML) call.
+    static func probe(_ url: URL) -> SourceFormat {
         guard let xml = runCapture(afinfo, ["-x", url.path]),
-              let doc = try? XMLDocument(xmlString: xml) else { return nil }
+              let doc = try? XMLDocument(xmlString: xml) else { return SourceFormat(depth: nil, rate: nil) }
+        func number(_ xpath: String) -> Int? {
+            guard let text = (try? doc.nodes(forXPath: xpath))?.first?.stringValue,
+                  let value = Double(text.trimmingCharacters(in: .whitespaces)) else { return nil }
+            return Int(value)
+        }
         // Doc uses a default namespace — match by local-name() instead of registering it.
         // FLAC's real depth is <source_info><bit_depth>; the track-level <bit_depth> is 0.
-        let nodes = (try? doc.nodes(forXPath:
-            "//*[local-name()='source_info']/*[local-name()='bit_depth']")) ?? []
-        guard let text = nodes.first?.stringValue,
-              let depth = Int(text.trimmingCharacters(in: .whitespaces)),
-              (1...32).contains(depth) else { return nil }
-        return depth
+        let depth = number("//*[local-name()='source_info']/*[local-name()='bit_depth']")
+            .flatMap { (1...32).contains($0) ? $0 : nil }
+        let rate = number("//*[local-name()='track']/*[local-name()='sample_rate']")
+            .flatMap { $0 > 0 ? $0 : nil }
+        return SourceFormat(depth: depth, rate: rate)
+    }
+
+    /// The output format for `mode`. Original is lossless; max48 caps at 24-bit and resamples
+    /// > 48 kHz to the same-family rate (88.2/176.4 → 44.1, 96/192 → 48) so the ratio stays an
+    /// integer; cd forces 16-bit / 44.1 kHz with dither when reducing bit depth.
+    static func outputFormat(for source: SourceFormat, mode: OutputMode) -> OutputFormat {
+        let matched: Int
+        switch source.depth ?? 24 {   // on detection failure, fail toward lossless
+        case ...16:    matched = 16   // 4–16-bit → BEI16 (lossless up-conversion for <16)
+        case 17...24:  matched = 24   // 17–24-bit (incl. 20-bit) → BEI24
+        default:       matched = 32   // 25–32-bit → BEI32
+        }
+        switch mode {
+        case .original:
+            return OutputFormat(depth: matched, rate: nil, dither: false)
+        case .max48:
+            let depth = min(matched, 24)
+            guard let rate = source.rate, rate > 48_000 else { return OutputFormat(depth: depth, rate: nil, dither: false) }
+            return OutputFormat(depth: depth, rate: rate % 44_100 == 0 ? 44_100 : 48_000, dither: false)
+        case .cd:
+            // Unknown rate → resample anyway: CD players accept nothing but 44.1 kHz.
+            return OutputFormat(depth: 16, rate: source.rate == 44_100 ? nil : 44_100,
+                                dither: (source.depth ?? 24) > 16)
+        }
+    }
+
+    /// "96 → 44.1 kHz, 24 → 16-bit" for whatever was reduced; nil when lossless.
+    private static func reductionNote(_ source: SourceFormat, _ out: OutputFormat) -> String? {
+        var parts: [String] = []
+        if let to = out.rate, let from = source.rate { parts.append("\(khz(from)) → \(khz(to)) kHz") }
+        if let from = source.depth, from > out.depth { parts.append("\(from) → \(out.depth)-bit") }
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
+    }
+
+    private static func khz(_ hz: Int) -> String {
+        hz % 1000 == 0 ? "\(hz / 1000)" : String(format: "%.1f", Double(hz) / 1000)
     }
 
     /// Convert a single FLAC to `destDir/<name>.aiff`. Skips if that AIFF already exists.
-    /// Preserves sample rate; matches source bit depth (16-, 24- or 32-bit,
-    /// big-endian signed PCM), rounding up on detection failure — never down.
+    /// Format follows options.mode (see outputFormat); .original is lossless.
     ///
     /// The AIFF is written to a hidden temp file and renamed into place only when
     /// complete, so an existing `<name>.aiff` is always a finished file.
     @discardableResult
-    static func convert(flacURL: URL, destDir: URL) throws -> Outcome {
+    static func convert(flacURL: URL, destDir: URL, options: ConvertOptions = ConvertOptions()) throws -> Outcome {
         guard flacURL.pathExtension.lowercased() == "flac" else { throw ConvertError.notFlac }
         let base = flacURL.deletingPathExtension().lastPathComponent
         let final = destDir.appendingPathComponent(base + ".aiff")
@@ -60,14 +125,16 @@ enum Converter {
             removeStalePartials(base: base, in: destDir)
             let tmp = try reserveTemp(base: base, in: destDir)
             do {
-                let detected = detectBitDepth(flacURL) ?? 24   // on detection failure, fail toward lossless
-                let depth: Int
-                switch detected {
-                case ...16:    depth = 16   // 4–16-bit → BEI16 (lossless up-conversion for <16)
-                case 17...24:  depth = 24   // 17–24-bit (incl. 20-bit) → BEI24
-                default:       depth = 32   // 25–32-bit → BEI32
+                let source = probe(flacURL)
+                let format = outputFormat(for: source, mode: options.mode)
+                var args = ["-f", "AIFF"]
+                if let rate = format.rate {
+                    args += ["-d", "BEI\(format.depth)@\(rate)", "-r", "127", "--src-complexity", "bats"]
+                } else {
+                    args += ["-d", "BEI\(format.depth)"]   // with no dither: today's lossless command line
                 }
-                let (code, err) = run(afconvert, ["-f", "AIFF", "-d", "BEI\(depth)", flacURL.path, tmp.path])
+                if format.dither { args += ["--dither", "1"] }   // TPDF
+                let (code, err) = run(afconvert, args + [flacURL.path, tmp.path])
                 guard code == 0 else {
                     throw ConvertError.afconvertFailed(err.isEmpty ? "afconvert exited with code \(code)" : err.trimmingCharacters(in: .whitespacesAndNewlines))
                 }
@@ -86,7 +153,7 @@ enum Converter {
                     }
                     throw ConvertError.saveFailed("Could not save \(final.lastPathComponent): \(String(cString: strerror(e)))")
                 }
-                return .converted(final, note: nil)
+                return .converted(final, note: reductionNote(source, format))
             } catch {
                 try? FileManager.default.removeItem(at: tmp)
                 throw error

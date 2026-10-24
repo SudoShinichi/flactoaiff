@@ -2,19 +2,29 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-// MARK: - Headless CLI mode (used by test.sh): --convert <in.flac> <destDir>
+// MARK: - Headless CLI mode (used by test.sh): --convert [--format original|max48|cd] <in.flac> <destDir>
 
 let cliArgs = CommandLine.arguments
+func cliUsage() -> Never {
+    FileHandle.standardError.write(
+        "usage: FlacToAiff --convert [--format original|max48|cd] <file-or-folder>... <outputDir>\n".data(using: .utf8)!)
+    exit(2)
+}
+
 if cliArgs.count >= 2 && cliArgs[1] == "--convert" {
-    guard cliArgs.count == 4 else {
-        FileHandle.standardError.write(
-            "usage: FlacToAiff --convert <in.flac> <destDir>\n".data(using: .utf8)!)
-        exit(2)
+    var args = Array(cliArgs.dropFirst(2))
+    var options = ConvertOptions()
+    if args.first == "--format" {
+        guard args.count >= 2, let mode = OutputMode(rawValue: args[1]) else { cliUsage() }
+        options.mode = mode
+        args.removeFirst(2)
     }
+    guard args.count == 2 else { cliUsage() }
     do {
         switch try Converter.convert(
-            flacURL: URL(fileURLWithPath: cliArgs[2]),
-            destDir: URL(fileURLWithPath: cliArgs[3], isDirectory: true)
+            flacURL: URL(fileURLWithPath: args[0]),
+            destDir: URL(fileURLWithPath: args[1], isDirectory: true),
+            options: options
         ) {
         case .converted(let out, _):     print("OK \(out.path)")
         case .alreadyConverted(let out): print("SKIP \(out.path)")
