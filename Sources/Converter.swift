@@ -4,15 +4,22 @@ import Foundation
 enum ConvertError: Error, CustomStringConvertible {
     case notFlac
     case afconvertFailed(String)
+    case saveFailed(String)
 
     var description: String {
         switch self {
         case .notFlac:
             return "Skipped — not a .flac file"
-        case .afconvertFailed(let message):
+        case .afconvertFailed(let message), .saveFailed(let message):
             return message
         }
     }
+}
+
+/// What a single conversion did.
+enum Outcome {
+    case converted(URL, note: String?)   // note: what wasn't lossless, e.g. "96 → 48 kHz"
+    case alreadyConverted(URL)
 }
 
 /// Core FLAC → AIFF conversion logic. No UI knowledge; usable headless.
@@ -35,61 +42,106 @@ enum Converter {
         return depth
     }
 
-    /// Atomically claim `url` (O_CREAT|O_EXCL). True = we own this name now.
-    private static func reserve(_ url: URL) -> Bool {
-        let fd = open(url.path, O_CREAT | O_EXCL | O_WRONLY, 0o644)
-        guard fd >= 0 else { return false }
-        close(fd)
-        return true
-    }
-
-    /// A `.aiff` URL in `destDir` that is *reserved* for the caller (zero-byte file created).
-    /// `song.aiff` → `song 2.aiff` → `song 3.aiff` … The reservation closes the TOCTOU
-    /// window: two concurrent callers can never claim the same name.
-    static func uniqueOutputURL(for flacURL: URL, in destDir: URL) -> URL {
-        let base = flacURL.deletingPathExtension().lastPathComponent
-        var candidate = destDir.appendingPathComponent(base + ".aiff")
-        var n = 2
-        while !reserve(candidate) {
-            candidate = destDir.appendingPathComponent("\(base) \(n).aiff")
-            n += 1
-        }
-        return candidate
-    }
-
-    /// Convert a single FLAC to AIFF inside `destDir`. Returns the output URL.
+    /// Convert a single FLAC to `destDir/<name>.aiff`. Skips if that AIFF already exists.
     /// Preserves sample rate; matches source bit depth (16-, 24- or 32-bit,
     /// big-endian signed PCM), rounding up on detection failure — never down.
+    ///
+    /// The AIFF is written to a hidden temp file and renamed into place only when
+    /// complete, so an existing `<name>.aiff` is always a finished file.
     @discardableResult
-    static func convert(flacURL: URL, destDir: URL) throws -> URL {
+    static func convert(flacURL: URL, destDir: URL) throws -> Outcome {
         guard flacURL.pathExtension.lowercased() == "flac" else { throw ConvertError.notFlac }
-        try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
+        let base = flacURL.deletingPathExtension().lastPathComponent
+        let final = destDir.appendingPathComponent(base + ".aiff")
+        if FileManager.default.fileExists(atPath: final.path) { return .alreadyConverted(final) }
 
-        let detected = detectBitDepth(flacURL) ?? 24   // on detection failure, fail toward lossless
-        let depth: Int
-        switch detected {
-        case ...16:    depth = 16   // 4–16-bit → BEI16 (lossless up-conversion for <16)
-        case 17...24:  depth = 24   // 17–24-bit (incl. 20-bit) → BEI24
-        default:       depth = 32   // 25–32-bit → BEI32
-        }
-
-        let output = uniqueOutputURL(for: flacURL, in: destDir)
-        let (code, err) = run(afconvert, ["-f", "AIFF", "-d", "BEI\(depth)", flacURL.path, output.path])
-        guard code == 0 else {
-            try? FileManager.default.removeItem(at: output)   // don't leave a corpse that steals "song.aiff"
-            throw ConvertError.afconvertFailed(err.isEmpty ? "afconvert exited with code \(code)" : err.trimmingCharacters(in: .whitespacesAndNewlines))
-        }
-
-        // afconvert drops all tags; carry title/artist/album/cover etc. over as an ID3 chunk.
-        if let tag = TagIO.id3v23(TagIO.readFlacTags(flacURL)) {
+        let createdDirs = try createDirectories(destDir)
+        do {
+            removeStalePartials(base: base, in: destDir)
+            let tmp = try reserveTemp(base: base, in: destDir)
             do {
-                try TagIO.appendID3Chunk(tag, to: output)
+                let detected = detectBitDepth(flacURL) ?? 24   // on detection failure, fail toward lossless
+                let depth: Int
+                switch detected {
+                case ...16:    depth = 16   // 4–16-bit → BEI16 (lossless up-conversion for <16)
+                case 17...24:  depth = 24   // 17–24-bit (incl. 20-bit) → BEI24
+                default:       depth = 32   // 25–32-bit → BEI32
+                }
+                let (code, err) = run(afconvert, ["-f", "AIFF", "-d", "BEI\(depth)", flacURL.path, tmp.path])
+                guard code == 0 else {
+                    throw ConvertError.afconvertFailed(err.isEmpty ? "afconvert exited with code \(code)" : err.trimmingCharacters(in: .whitespacesAndNewlines))
+                }
+
+                // afconvert drops all tags; carry title/artist/album/cover etc. over as an ID3 chunk.
+                if let tag = TagIO.id3v23(TagIO.readFlacTags(flacURL)) {
+                    try TagIO.appendID3Chunk(tag, to: tmp)
+                }
+
+                // RENAME_EXCL: never replace an AIFF another conversion published meanwhile.
+                guard renamex_np(tmp.path, final.path, UInt32(RENAME_EXCL)) == 0 else {
+                    let e = errno
+                    if e == EEXIST {
+                        try? FileManager.default.removeItem(at: tmp)
+                        return .alreadyConverted(final)
+                    }
+                    throw ConvertError.saveFailed("Could not save \(final.lastPathComponent): \(String(cString: strerror(e)))")
+                }
+                return .converted(final, note: nil)
             } catch {
-                try? FileManager.default.removeItem(at: output)
+                try? FileManager.default.removeItem(at: tmp)
                 throw error
             }
+        } catch {
+            for dir in createdDirs.reversed() { rmdir(dir.path) }   // only removes still-empty dirs
+            throw error
         }
-        return output
+    }
+
+    // MARK: - Output file helpers
+
+    /// Create `dir` and any missing parents. Returns the ones created, outermost first.
+    private static func createDirectories(_ dir: URL) throws -> [URL] {
+        var missing: [URL] = []
+        var d = dir.standardizedFileURL
+        while !FileManager.default.fileExists(atPath: d.path) {
+            missing.insert(d, at: 0)
+            let parent = d.deletingLastPathComponent()
+            if parent.path == d.path { break }
+            d = parent
+        }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return missing
+    }
+
+    private static let counterLock = NSLock()
+    private static var counter = 0
+
+    /// Create a fresh `.<base>.<pid>.<n>.aiff.partial` in `dir` (O_CREAT|O_EXCL), so no two
+    /// writers — in this process or another — ever share a temp file.
+    private static func reserveTemp(base: String, in dir: URL) throws -> URL {
+        while true {
+            counterLock.lock(); let n = counter; counter += 1; counterLock.unlock()
+            let url = dir.appendingPathComponent(".\(base).\(getpid()).\(n).aiff.partial")
+            let fd = open(url.path, O_CREAT | O_EXCL | O_WRONLY, 0o644)
+            if fd >= 0 { close(fd); return url }
+            let e = errno
+            guard e == EEXIST else {
+                throw ConvertError.saveFailed("Could not write to \(dir.path): \(String(cString: strerror(e)))")
+            }
+        }
+    }
+
+    /// Delete `.<base>.<pid>.<n>.aiff.partial` files whose process is gone (crash leftovers).
+    private static func removeStalePartials(base: String, in dir: URL) {
+        let prefix = "." + base + ".", suffix = ".aiff.partial"
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return }
+        for name in names where name.hasPrefix(prefix) && name.hasSuffix(suffix) {
+            let parts = name.dropFirst(prefix.count).dropLast(suffix.count).split(separator: ".")
+            guard parts.count == 2, let pid = pid_t(parts[0]), Int(parts[1]) != nil else { continue }
+            if kill(pid, 0) == -1 && errno == ESRCH {
+                try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
+            }
+        }
     }
 
     // MARK: - Process helpers

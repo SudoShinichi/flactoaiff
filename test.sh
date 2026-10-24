@@ -25,9 +25,10 @@ INFO="$(afinfo "$OUT")"
 echo "$INFO" | grep -q "24-bit big-endian signed integer" || { echo "FAIL: wrong bit depth/format"; echo "$INFO"; exit 1; }
 echo "$INFO" | grep -q "44100 Hz" || { echo "FAIL: sample rate not preserved"; echo "$INFO"; exit 1; }
 
-echo "4. Verify auto-rename on name clash…"
-"$BIN" --convert "$TMP/tone.flac" "$DEST"
-[ -f "$DEST/tone 2.aiff" ] || { echo "FAIL: auto-rename did not produce 'tone 2.aiff'"; ls "$DEST"; exit 1; }
+echo "4. Converting the same file again skips it (no 'tone 2.aiff')…"
+SECOND="$("$BIN" --convert "$TMP/tone.flac" "$DEST")"
+[ "$SECOND" = "SKIP $DEST/tone.aiff" ] || { echo "FAIL: expected SKIP, got: $SECOND"; exit 1; }
+[ ! -e "$DEST/tone 2.aiff" ] || { echo "FAIL: duplicate 'tone 2.aiff' created"; exit 1; }
 
 echo "5. Verify non-flac input is rejected…"
 if "$BIN" --convert "$TMP/tone.aiff" "$DEST" 2>/dev/null; then
@@ -55,13 +56,18 @@ set -e
 [ "$RC" -ne 0 ] || { echo "FAIL: corrupt FLAC did not fail"; exit 1; }
 grep -q "ERROR" "$TMP/err.txt" || { echo "FAIL: no error propagated to stderr"; exit 1; }
 ls "$DEST" | grep -q "^corrupt" && { echo "FAIL: partial output left behind (L2)"; exit 1; }
+ls -A "$DEST" | grep -q "\.partial$" && { echo "FAIL: temp .partial file left behind"; exit 1; }
 
-echo "9. Concurrent conversions never overwrite (O_EXCL reservation)…"
+echo "9. Concurrent conversions of one file: exactly one complete AIFF, the rest SKIP…"
 DEST2="$TMP/race"
-for i in 1 2 3 4; do "$BIN" --convert "$TMP/tone.flac" "$DEST2" & done
+for i in 1 2 3 4; do "$BIN" --convert "$TMP/tone.flac" "$DEST2" > "$TMP/race.$i" & done
 wait
-COUNT="$(ls "$DEST2" | wc -l | tr -d ' ')"
-[ "$COUNT" -eq 4 ] || { echo "FAIL: expected 4 distinct outputs, got $COUNT"; ls "$DEST2"; exit 1; }
+COUNT="$(ls -A "$DEST2" | wc -l | tr -d ' ')"
+[ "$COUNT" -eq 1 ] || { echo "FAIL: expected 1 file, got $COUNT"; ls -A "$DEST2"; exit 1; }
+afinfo "$DEST2/tone.aiff" | grep -q "24-bit big-endian signed integer" \
+    || { echo "FAIL: raced output is not a valid 24-bit AIFF"; exit 1; }
+SKIPS="$(cat "$TMP"/race.* | grep -c '^SKIP')"
+[ "$SKIPS" -eq 3 ] || { echo "FAIL: expected 3 SKIP lines, got $SKIPS"; cat "$TMP"/race.*; exit 1; }
 
 echo "10. --convert with wrong arity exits 2 with usage (never launches GUI)…"
 set +e
@@ -105,5 +111,13 @@ want = {'TIT2': 'Song Title', 'TPE1': 'Some Artist', 'TALB': 'Album \u84b8\u767c
 assert all(frames.get(k) == v for k, v in want.items()), frames
 PY
 
+echo "12. A crash leftover (.partial of a dead process) doesn't block conversion and is removed…"
+DEST3="$TMP/stale"; mkdir -p "$DEST3"
+( : ) & DEAD=$!; wait "$DEAD"     # a PID that is guaranteed to be gone
+echo junk > "$DEST3/.tone.$DEAD.0.aiff.partial"
+"$BIN" --convert "$TMP/tone.flac" "$DEST3" >/dev/null
+[ -f "$DEST3/tone.aiff" ] || { echo "FAIL: conversion blocked by stale partial"; exit 1; }
+[ ! -e "$DEST3/.tone.$DEAD.0.aiff.partial" ] || { echo "FAIL: stale partial not cleaned up"; exit 1; }
+
 echo
-echo "PASS: conversion, 24/16-bit preservation, sample-rate preservation, auto-rename, rejection, filename-safe detection, corrupt-input handling, concurrent no-overwrite, CLI arity, and tag carry-over all work."
+echo "PASS: all checks."

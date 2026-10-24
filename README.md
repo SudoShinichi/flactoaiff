@@ -26,7 +26,7 @@ converted copies appear in your **Downloads** folder, with their metadata and co
   source depth can't be detected, the app rounds *up*, never down.
 - **Tags and artwork carried over** — title, artist, album, cover art and more are written
   into the AIFF as an ID3 tag, so tracks show up correctly in your library.
-- **Never overwrites** — name clashes are resolved automatically: `song.aiff` → `song 2.aiff`.
+- **Skips duplicates** — files that were already converted are skipped, never overwritten. Output is written to a temp file and renamed into place only when complete, so a half-written AIFF can never be mistaken for a finished one.
 - **No dependencies** — built on macOS's own `afconvert` audio engine. No ffmpeg, no Homebrew.
 
 ## Requirements
@@ -94,7 +94,7 @@ appends an `ID3 ` chunk to the AIFF.
 ```
 
 The end-to-end test synthesizes real FLAC files and runs the actual conversion core. It
-covers bit-depth and sample-rate preservation, auto-renaming, rejecting non-FLAC and corrupt
+covers bit-depth and sample-rate preservation, duplicate skipping, rejecting non-FLAC and corrupt
 input, concurrent conversions, and tag carry-over.
 
 A headless mode is available for scripting:

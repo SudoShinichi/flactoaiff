@@ -12,11 +12,13 @@ if cliArgs.count >= 2 && cliArgs[1] == "--convert" {
         exit(2)
     }
     do {
-        let out = try Converter.convert(
+        switch try Converter.convert(
             flacURL: URL(fileURLWithPath: cliArgs[2]),
             destDir: URL(fileURLWithPath: cliArgs[3], isDirectory: true)
-        )
-        print("OK \(out.path)")
+        ) {
+        case .converted(let out, _):     print("OK \(out.path)")
+        case .alreadyConverted(let out): print("SKIP \(out.path)")
+        }
         exit(0)
     } catch {
         FileHandle.standardError.write("ERROR \(error)\n".data(using: .utf8)!)
@@ -161,11 +163,18 @@ struct DropView: View {
                 do {
                     // Converter.convert is the single source of the extension check
                     // and the "Skipped — not a .flac file" message (via ConvertError).
-                    let out = try Converter.convert(flacURL: u, destDir: dest)
+                    let outcome = try Converter.convert(flacURL: u, destDir: dest)
                     DispatchQueue.main.async {
-                        produced.append(out)
-                        results.append(FileStatus(name: u.lastPathComponent, ok: true,
-                                                  detail: "→ \(out.lastPathComponent)"))
+                        switch outcome {
+                        case .converted(let out, _):
+                            produced.append(out)
+                            results.append(FileStatus(name: u.lastPathComponent, ok: true,
+                                                      detail: "→ \(out.lastPathComponent)"))
+                        case .alreadyConverted(let out):
+                            produced.append(out)
+                            results.append(FileStatus(name: u.lastPathComponent, ok: true,
+                                                      detail: "Already converted"))
+                        }
                     }
                 } catch {
                     DispatchQueue.main.async {
