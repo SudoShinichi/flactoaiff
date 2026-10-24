@@ -22,8 +22,9 @@ metadata and cover art intact.
 
 ## Features
 
-- **Drag and drop** — drop files or whole folders. Folders are scanned recursively and keep
-  their structure (`Album/CD1/…`); cover images and other non-FLAC files are ignored.
+- **Drag and drop** — onto the window or the Dock icon. Drop files or whole folders; folders are
+  scanned recursively and keep their structure (`Album/CD1/…`), and cover images and other
+  non-FLAC files are ignored.
 - **Lossless** — sample rate is preserved and bit depth (16, 24 or 32-bit) is matched. If the
   source depth can't be detected, the app rounds *up*, never down.
 - **Compatibility formats** (optional) — pick *CDJ: max 24-bit / 48 kHz* for CDJ-2000NXS,
@@ -55,10 +56,13 @@ This produces `build/FlacToAiff.app`. Drag it into `/Applications` to install it
 ## Usage
 
 1. Open **FlacToAiff**.
-2. Drag one or more `.flac` files onto the window.
+2. Drag `.flac` files or folders onto the window.
 3. Find the converted `.aiff` files in the **Save to** folder shown under the drop zone
    (Downloads by default). Click it to choose another folder. Use **Format** to pick a
    compatibility mode; the line under it says which players it is for.
+
+You can also drop files or folders on the app's Dock icon, even when the app isn't running. The
+app never becomes the default app for FLAC files.
 
 Non-FLAC files are skipped, and each file's result is listed in the window.
 

@@ -188,5 +188,16 @@ set +e; "$BIN" --convert "$TMP/tone.flac" "$RO" 2>"$TMP/ro.err"; RC=$?; set -e
 chmod 755 "$RO"
 [ "$RC" -eq 1 ] && grep -q "Output folder not available" "$TMP/ro.err" || { echo "FAIL: unwritable output not reported"; cat "$TMP/ro.err"; exit 1; }
 
+echo "18. App declares FLAC + folders for Dock drops, with rank None (never the default app)…"
+PLIST="build/FlacToAiff.app/Contents/Info.plist"
+[ "$(plutil -extract CFBundleDocumentTypes.0.LSItemContentTypes.0 raw "$PLIST" 2>/dev/null)" = "org.xiph.flac" ] \
+    || { echo "FAIL: org.xiph.flac not declared"; exit 1; }
+for i in 0 1; do
+    [ "$(plutil -extract CFBundleDocumentTypes.$i.LSHandlerRank raw "$PLIST")" = "None" ] \
+        || { echo "FAIL: document type $i rank is not None (could become the default app)"; exit 1; }
+done
+[ "$(plutil -extract CFBundleDocumentTypes.1.LSItemContentTypes.0 raw "$PLIST")" = "public.folder" ] \
+    || { echo "FAIL: folders not declared"; exit 1; }
+
 echo
 echo "PASS: all checks."

@@ -253,6 +253,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// Dock-icon drops and Finder "Open With". On a cold launch this can arrive before
+    /// applicationDidFinishLaunching; the queue exists from init, so nothing is lost.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        queue.enqueue(urls)
+    }
+
     private func installMainMenu() {
         let mainMenu = NSMenu()
 

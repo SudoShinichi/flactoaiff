@@ -103,7 +103,9 @@ If `outputFolder` does not exist or is not writable, each job fails with `Output
 
 ## Dock / Open With
 `Info.plist` gains `CFBundleDocumentTypes`:
-- `LSItemContentTypes = [org.xiph.flac]`, `CFBundleTypeRole = Viewer`, `LSHandlerRank = Alternate`. The app never becomes the default FLAC app.
+- `LSItemContentTypes = [org.xiph.flac]`, `CFBundleTypeRole = Viewer`, `LSHandlerRank = None` (accept drops only).
+  - `Alternate` was tried first. It made the app the *default* FLAC handler: QuickTime, the only other FLAC app, claims audio only generically, so the exact-type match won.
+  - With `None`, QuickTime stays the default and Dock drops still work (verified 2026-10-24). The app is reachable via Open With → Other…, not the short list.
 - `LSItemContentTypes = [public.folder]`, `CFBundleTypeRole = Viewer`, `LSHandlerRank = None` (accept drops only).
 
 `AppDelegate.application(_:open:)` enqueues the URLs. URLs that arrive before the window exists (cold launch) are enqueued once the queue is created in `applicationWillFinishLaunching`.
