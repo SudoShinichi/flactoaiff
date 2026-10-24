@@ -38,39 +38,59 @@ if cliArgs.count >= 2 && cliArgs[1] == "--convert" {
 
 // MARK: - GUI
 
-/// One row in the results list.
-struct FileStatus: Identifiable {
-    let id = UUID()
-    let name: String
-    let ok: Bool
-    let detail: String
-}
-
 struct DropView: View {
+    @ObservedObject var queue: ConversionQueue
+    @ObservedObject var settings: Settings
     @State private var targeted = false
-    @State private var results: [FileStatus] = []
-    @State private var produced: [URL] = []
-    @State private var working = false
-
-    private var downloadsDir: URL {
-        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
-    }
 
     var body: some View {
         VStack(spacing: 12) {
             dropZone
-            if !results.isEmpty && !working {
+            settingsBar
+            if !queue.rows.isEmpty && !queue.isWorking {
                 HStack {
-                    Button("Reveal in Finder") { reveal() }
-                        .disabled(produced.isEmpty)
+                    Button("Reveal in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting(queue.outputs)
+                    }
+                    .disabled(queue.outputs.isEmpty)
                     Spacer()
-                    Button("Clear") { results = []; produced = [] }
+                    Button("Clear") { queue.clear() }
                 }
             }
         }
         .padding(16)
-        .frame(minWidth: 360, minHeight: 300)
+        .frame(minWidth: 400, minHeight: 400)
+    }
+
+    private var settingsBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text("Save to:").foregroundColor(.secondary)
+                Button(action: chooseOutputFolder) {
+                    HStack(spacing: 4) {
+                        Text(settings.outputFolder.lastPathComponent)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Image(systemName: "chevron.up.chevron.down").font(.caption2)
+                    }
+                }
+                .help(settings.outputFolder.path)
+                Spacer()
+            }
+            Picker("Format:", selection: $settings.mode) {
+                ForEach(OutputMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.menu)
+            .fixedSize()
+            Text(settings.mode.explanation)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .font(.callout)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var dropZone: some View {
@@ -83,13 +103,13 @@ struct DropView: View {
                         .fill(targeted ? Color.accentColor.opacity(0.08) : Color.clear)
                 )
 
-            if results.isEmpty {
+            if queue.rows.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "arrow.down.circle")
                         .font(.system(size: 44, weight: .light))
-                    Text(working ? "Converting…" : "Drop .flac here")
+                    Text(queue.isWorking ? "Converting…" : "Drop .flac files or folders here")
                         .font(.headline)
-                    Text("Converted .aiff files are saved to Downloads")
+                    Text("Converted .aiff files are saved to \(settings.outputFolder.lastPathComponent)")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
@@ -99,13 +119,13 @@ struct DropView: View {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
-                        ForEach(results) { r in
+                        ForEach(queue.rows) { row in
                             HStack(alignment: .top, spacing: 8) {
-                                Image(systemName: r.ok ? "checkmark.circle.fill" : "xmark.circle.fill")
-                                    .foregroundColor(r.ok ? .green : .red)
+                                Image(systemName: row.kind.symbol)
+                                    .foregroundColor(row.kind.color)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(r.name).font(.callout)
-                                    Text(r.detail).font(.caption).foregroundColor(.secondary)
+                                    Text(row.name).font(.callout)
+                                    Text(row.detail).font(.caption).foregroundColor(.secondary)
                                 }
                                 Spacer()
                             }
@@ -121,18 +141,20 @@ struct DropView: View {
         }
     }
 
-    private func reveal() {
-        // The button is disabled while produced.isEmpty, so this always has URLs.
-        NSWorkspace.shared.activateFileViewerSelecting(produced)
+    private func chooseOutputFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = settings.outputFolder
+        panel.prompt = "Save Here"
+        if panel.runModal() == .OK, let url = panel.url {
+            settings.outputFolder = url
+        }
     }
 
-    @discardableResult
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
-        guard !working else { return false }   // C2: one batch at a time
-        results = []
-        produced = []
-        working = true
-
         let group = DispatchGroup()
         let lock = NSLock()
         var urls: [URL] = []
@@ -153,67 +175,79 @@ struct DropView: View {
             }
         }
 
-        let dest = downloadsDir
-        group.notify(queue: .global(qos: .userInitiated)) {
-            for original in urls {
-                var u = original
-                // A Finder alias named song.flac → convert its target.
-                if let vals = try? u.resourceValues(forKeys: [.isAliasFileKey]), vals.isAliasFile == true,
-                   let resolved = try? URL(resolvingAliasFileAt: u) {
-                    u = resolved
-                }
-                var isDir: ObjCBool = false
-                if FileManager.default.fileExists(atPath: u.path, isDirectory: &isDir), isDir.boolValue {
-                    DispatchQueue.main.async {
-                        results.append(FileStatus(name: u.lastPathComponent, ok: false,
-                                                  detail: "Skipped — folders aren't supported; drop the .flac files inside"))
-                    }
-                    continue
-                }
-                do {
-                    // Converter.convert is the single source of the extension check
-                    // and the "Skipped — not a .flac file" message (via ConvertError).
-                    let outcome = try Converter.convert(flacURL: u, destDir: dest)
-                    DispatchQueue.main.async {
-                        switch outcome {
-                        case .converted(let out, _):
-                            produced.append(out)
-                            results.append(FileStatus(name: u.lastPathComponent, ok: true,
-                                                      detail: "→ \(out.lastPathComponent)"))
-                        case .alreadyConverted(let out):
-                            produced.append(out)
-                            results.append(FileStatus(name: u.lastPathComponent, ok: true,
-                                                      detail: "Already converted"))
-                        }
-                    }
-                } catch {
-                    DispatchQueue.main.async {
-                        results.append(FileStatus(name: u.lastPathComponent, ok: false,
-                                                  detail: "\(error)"))
-                    }
-                }
-            }
-            DispatchQueue.main.async { working = false }
+        // Drops while a batch runs are queued behind it.
+        group.notify(queue: .main) {
+            self.queue.enqueue(urls.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending })
         }
         return true
     }
 }
 
+/// Menu titles and player-compatibility explanations (wording from the spec's "Output formats" table).
+extension OutputMode {
+    var title: String {
+        switch self {
+        case .original: return "Original (lossless)"
+        case .max48:    return "CDJ: max 24-bit / 48 kHz"
+        case .cd:       return "CD: 16-bit / 44.1 kHz"
+        }
+    }
+
+    var explanation: String {
+        switch self {
+        case .original:
+            return "Unchanged quality. For CDJ-3000/3000X, CDJ-2000NXS2 (USB/SD), rekordbox, Serato and Music."
+        case .max48:
+            return "For CDJ-2000NXS, 2000, 900NXS, 850, 350 and XDJ-1000MK2: hi-res files are lowered to 48 kHz / 24-bit."
+        case .cd:
+            return "For burning audio CDs for CD-only players (CDJ-1000MK3, 800MK2, 400): everything becomes 16-bit / 44.1 kHz."
+        }
+    }
+}
+
+private extension Row.Kind {
+    var symbol: String {
+        switch self {
+        case .converted:        return "checkmark.circle.fill"
+        case .alreadyConverted: return "forward.end.circle.fill"
+        case .skipped:          return "minus.circle.fill"
+        case .failed:           return "xmark.circle.fill"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .converted:                     return .green
+        case .alreadyConverted, .skipped:    return .secondary
+        case .failed:                        return .red
+        }
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow!
+    private let settings: Settings
+    let queue: ConversionQueue
+
+    override init() {
+        let settings = Settings()
+        self.settings = settings
+        queue = ConversionQueue(settings: settings)
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
 
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 380, height: 320),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 420),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.isReleasedWhenClosed = false   // AppDelegate holds a strong ref; avoid over-release
         window.title = "FLAC → AIFF"
-        window.contentView = NSHostingView(rootView: DropView())
+        window.contentView = NSHostingView(rootView: DropView(queue: queue, settings: settings))
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

@@ -17,7 +17,8 @@
 
 FlacToAiff is a small native Mac app for turning `.flac` files into `.aiff`, the format
 expected by rekordbox, Serato, Apple Music and many CDJs. Drop files on the window and the
-converted copies appear in your **Downloads** folder, with their metadata and cover art intact.
+converted copies appear in your chosen output folder (Downloads by default), with their
+metadata and cover art intact.
 
 ## Features
 
@@ -55,7 +56,9 @@ This produces `build/FlacToAiff.app`. Drag it into `/Applications` to install it
 
 1. Open **FlacToAiff**.
 2. Drag one or more `.flac` files onto the window.
-3. Find the converted `.aiff` files in your **Downloads** folder.
+3. Find the converted `.aiff` files in the **Save to** folder shown under the drop zone
+   (Downloads by default). Click it to choose another folder. Use **Format** to pick a
+   compatibility mode; the line under it says which players it is for.
 
 Non-FLAC files are skipped, and each file's result is listed in the window.
 
@@ -89,10 +92,12 @@ appends an `ID3 ` chunk to the AIFF.
 
 | File | Purpose |
 | --- | --- |
-| `Sources/main.swift` | SwiftUI drop-zone window, plus a headless `--convert` mode used by the tests |
+| `Sources/main.swift` | SwiftUI window (drop zone, settings bar, results), app delegate, and the headless `--convert` mode |
 | `Sources/Converter.swift` | Bit-depth detection, safe output naming, `afconvert` invocation |
 | `Sources/Tags.swift` | FLAC tag/picture parsing and ID3 chunk writing |
 | `Sources/Jobs.swift` | Expands dropped files/folders into conversions and runs them |
+| `Sources/Settings.swift` | Remembered output folder and output format |
+| `Sources/ConversionQueue.swift` | Background conversion queue shared by the window, Dock and Open With |
 | `scripts/make-icon.swift` | Draws the app icon in code; rendered by `build.sh` |
 
 ## Development
@@ -118,8 +123,8 @@ double-click. A copy received via browser download or AirDrop is quarantined. Ri
 once, or run `xattr -dr com.apple.quarantine FlacToAiff.app`. The app is ad-hoc signed
 (`local.flactoaiff`) and has no Developer ID.
 
-**Downloads folder permission prompt.** On first use, macOS asks to let FlacToAiff access
-Downloads. Click **OK**. Launch the app from Finder rather than running the binary from
+**Folder permission prompt.** The first time the app writes to Downloads (or another protected
+folder like Desktop or Documents), macOS asks for permission. Click **OK**. Launch the app from Finder rather than running the binary from
 Terminal, so the permission is granted to FlacToAiff itself.
 
 **Converted files show the filename as the title.** Those files were converted before tag
