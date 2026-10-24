@@ -7,12 +7,12 @@ Remove friction from the DJ library workflow with three features:
 
 1. **Output & duplicates** — AIFFs go to a remembered, user-chosen folder; files already converted are skipped.
 2. **Folders + Dock drop** — drop whole folders (structure kept), drop onto the Dock icon, or use Finder's Open With.
-3. **CDJ mode** — optional cap at 24-bit / 48 kHz so every file plays on CDJ-2000-class players.
+3. **Compatibility formats** — a Format menu: Original (lossless), CDJ (max 24-bit / 48 kHz) or CD (16-bit / 44.1 kHz). Each mode explains which players it is for.
 
 ## Non-goals
 - Watch folder, tag-based renaming, output verification, Music/rekordbox import (later candidates).
 - "Next to original" output, or a Replace/Keep-both duplicate setting.
-- 16/44.1 CDJ target, or a menu of targets.
+- More than these three modes (the enum makes adding one easy later).
 - A separate Settings window.
 - Re-converting a file when settings change (the user deletes the AIFF to redo it).
 
@@ -20,9 +20,9 @@ Remove friction from the DJ library workflow with three features:
 
 | Unit | Responsibility |
 | --- | --- |
-| `Sources/Settings.swift` (new) | `outputFolder: URL` (default `~/Downloads`) and `cdjMode: Bool` (default `false`), persisted in `UserDefaults`. Pure value access; no UI. |
+| `Sources/Settings.swift` (new) | `outputFolder: URL` (default `~/Downloads`) and `mode: OutputMode` (default `.original`, stored by raw value), persisted in `UserDefaults`. Pure value access; no UI. |
 | `Sources/ConversionQueue.swift` (new) | `ObservableObject`, main-actor state. `enqueue(_ urls: [URL])` accepts files and folders from any source, expands folders into jobs, converts serially on a background queue, publishes `rows` and `isWorking`. Single owner shared by the window and `AppDelegate`. |
-| `Sources/Converter.swift` (changed) | `convert(flacURL:destDir:options:) -> Outcome`. Gains atomic publish, skip-if-exists and CDJ resampling. Still UI-free. |
+| `Sources/Converter.swift` (changed) | `convert(flacURL:destDir:options:) -> Outcome`. Gains atomic publish, skip-if-exists and format modes (resampling/dither). Still UI-free. |
 | `Sources/Tags.swift` (unchanged) | Tags are appended to the temporary file before it is published. |
 | `Sources/main.swift` (changed) | `DropView` only draws queue state plus the settings bar. `AppDelegate` creates the queue, handles `application(_:open:)`, and passes URLs to it. CLI mode is extended. |
 
@@ -42,7 +42,8 @@ The CLI uses the queue's folder expansion and `Converter` directly, synchronousl
 A slim row under the drop zone:
 
 - `Save to: <folder name> ▾` — opens an `NSOpenPanel` for choosing a directory. Tooltip shows the full path.
-- `☐ CDJ mode (max 24-bit / 48 kHz)` — checkbox.
+- `Format: <mode title> ▾` — menu with the three modes, on its own row.
+- One line of secondary text under it: the selected mode's explanation. It updates on change.
 
 Both persist across launches. Changes apply to files enqueued after the change.
 
@@ -57,24 +58,23 @@ Both persist across launches. Changes apply to files enqueued after the change.
 - **Stale cleanup:** before converting, delete any `.<basename>.<pid>.*.aiff.partial` whose PID is not a live process (crash leftovers).
 - Any failure after the temp file is created deletes it.
 
-### CDJ mode (off by default)
+### Output formats (compatibility modes)
+A setting with three modes. `Original` is the default.
 
-| Source bit depth | Output |
-| --- | --- |
-| ≤16 | 16 |
-| 17–24 | 24 |
-| >24 | 24 (CDJ) / 32 (normal) |
+| Mode (`OutputMode`) | Menu title | Output | Explanation shown under the menu |
+| --- | --- | --- | --- |
+| `original` | Original (lossless) | Depth matched (≤16→16, 17–24→24, >24→32), rate unchanged | Unchanged quality. For CDJ-3000/3000X, CDJ-2000NXS2 (USB/SD), rekordbox, Serato and Music. |
+| `max48` | CDJ: max 24-bit / 48 kHz | Depth as Original but capped at 24. Rate >48 kHz → 44.1 kHz if a multiple of 44 100, else 48 kHz. ≤48 kHz unchanged. | For CDJ-2000NXS, 2000, 900NXS, 850, 350 and XDJ-1000MK2: hi-res files are lowered to 48 kHz / 24-bit. |
+| `cd` | CD: 16-bit / 44.1 kHz | Always 16-bit / 44.1 kHz. TPDF dither (`--dither 1`) when the source is >16-bit or its depth is unknown. | For burning audio CDs for CD-only players (CDJ-1000MK3, 800MK2, 400): everything becomes 16-bit / 44.1 kHz. |
 
-| Source sample rate | CDJ output |
-| --- | --- |
-| ≤48 000 | unchanged |
-| 88 200, 176 400, 352 800 | 44 100 |
-| 96 000, 192 000, 384 000 | 48 000 |
-| other >48 000 | 48 000 |
-
-- The rate is detected from `afinfo -x` (`sample_rate`), the same way as bit depth. If detection fails, the rate is left unchanged (no `@rate` passed).
-- `afconvert -f AIFF -d BEI<depth>@<rate> -r 127 --src-complexity bats in out` is used only when resampling. The non-resampling command line is unchanged from today, so in-limit files stay bit-identical.
-- The outcome records `(fromRate, toRate)` and/or `(fromDepth, toDepth)` when they differ. The row shows e.g. `→ track.aiff (96 → 48 kHz)`.
+- The model lists come from third-party compatibility guides and Pioneer manual excerpts (researched 2026-10-24). The in-app text names only these models.
+- The rate is detected from `afinfo -x` (`track/sample_rate`), the same way as bit depth.
+  - **max48:** if detection fails, the rate is left unchanged (no `@rate`).
+  - **cd:** if detection fails, it resamples to 44.1 kHz anyway; skipped only when the source is known to be 44.1 kHz.
+- **Resampling:** `afconvert -f AIFF -d BEI<depth>@<rate> -r 127 --src-complexity bats [--dither 1] in out`.
+- **No resampling:** `afconvert -f AIFF -d BEI<depth> [--dither 1] in out`.
+- Without resampling or dither, the command line is unchanged from today, so in-limit files stay bit-identical. In particular, a 16/44.1 source in `cd` mode is bit-identical to `original`.
+- **Row note:** the outcome lists what was reduced, e.g. `→ track.aiff (96 → 44.1 kHz, 24 → 16-bit)`.
 
 ### Folder expansion
 - Recursive enumeration that skips hidden files and packages. Names starting with `.` exclude `._*` AppleDouble files.
@@ -110,7 +110,7 @@ If `outputFolder` does not exist or is not writable, each job fails with `Output
 
 ## CLI
 ```
-FlacToAiff --convert [--cdj] <file-or-folder>... <outputDir>
+FlacToAiff --convert [--format original|max48|cd] <file-or-folder>... <outputDir>
 ```
 - Prints one line per job: `OK <path>`, `SKIP <path>` (already converted), or `ERROR <name>: <message>` to stderr.
 - Exit codes:
@@ -125,18 +125,19 @@ Existing checks stay, except check 4 (auto-rename), which becomes a duplicate ch
 2. **No broken outputs:** a corrupt FLAC leaves no `.aiff` and no `*.partial`. A planted stale `.tone.99999.0.aiff.partial` (dead PID) does not block conversion and is removed.
 3. **Race:** 4 parallel conversions of one file into one dir produce exactly 1 AIFF, which passes `afinfo`. At least 3 runs print `SKIP`.
 4. **Folders:** a tree with nested FLACs, a `.jpg`, `._x.flac` and a FLAC-less subfolder produces the mirrored tree, real tracks only, and no empty dirs.
-5. **CDJ:**
-   - 24/96 → 24/48 and 24/88.2 → 24/44.1 with `--cdj`;
-   - 16/44.1 is unchanged with `--cdj`;
-   - 24/96 stays 24/96 without `--cdj`.
+5. **Formats:**
+   - `max48`: 24/96 → 24/48, 24/88.2 → 24/44.1, and 16/44.1 unchanged.
+   - `cd`: 24/96 → 16/44.1, 24/44.1 → 16/44.1, and a 16/44.1 source is byte-identical to its `original` output.
+   - Default (no `--format`): 24/96 stays 24/96.
+   - An unknown `--format` value exits 2.
 
    All checked via `afinfo`.
-6. **Tags under CDJ:** the tag test is re-run with `--cdj` on a 96 kHz source.
+6. **Tags under CDJ:** the tag test is re-run with `--format cd` on a 96 kHz source.
 7. **Arity:** `--convert` with fewer than 2 paths exits 2 with usage.
 
 Manual checks (not scriptable):
 - Dock drop with the app running and with the app closed.
 - Finder Open With.
 - The app is not offered as the default FLAC handler.
-- The settings bar folder picker and checkbox persist across a relaunch.
+- The settings bar folder picker and Format menu persist across a relaunch.
 - An unplugged output drive gives the error row.

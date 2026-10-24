@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add skip-duplicates with atomic output, an optional CDJ mode (max 24-bit / 48 kHz), folder drops that keep their structure, a remembered output folder, and Dock / Open With input.
+**Goal:** Add skip-duplicates with atomic output, selectable output formats (Original / CDJ max 24-bit 48 kHz / CD 16-bit 44.1 kHz) with player-compatibility explanations, folder drops that keep their structure, a remembered output folder, and Dock / Open With input.
 
 **Architecture:**
-- `Converter` gains atomic temp-file → `renamex_np(RENAME_EXCL)` publishing, which makes "exists → skip" safe, plus CDJ format planning.
+- `Converter` gains atomic temp-file → `renamex_np(RENAME_EXCL)` publishing, which makes "exists → skip" safe, plus output-format planning (resampling, dither).
 - A new UI-free `Jobs` layer expands dropped files and folders into work items and runs them into result `Row`s. The CLI and the new `ConversionQueue` both use it.
 - `ConversionQueue` (an `ObservableObject`) is fed by window drops and by `AppDelegate.application(_:open:)`, and drives `DropView`.
-- `Settings` persists the output folder and CDJ mode.
+- `Settings` persists the output folder and output format.
 
 **Tech Stack:**
 - Swift + SwiftUI/AppKit, compiled with `swiftc` (no Xcode).
@@ -22,16 +22,16 @@
 - Target `arm64-apple-macos12.0`: no APIs newer than macOS 12 (e.g. no `OSAllocatedUnfairLock`; use `NSLock`).
 - No third-party dependencies; audio work goes through `/usr/bin/afconvert` and `/usr/bin/afinfo` only.
 - Files already within limits must be converted with today's exact command line (`afconvert -f AIFF -d BEI<depth> in out`), so output stays bit-identical.
-- CDJ mode is off by default.
+- Output format defaults to `original` (lossless). Mode menu titles and explanations are copied verbatim from the spec's "Output formats" table.
 - User-facing strings, verbatim:
   - `Already converted`
   - `No .flac files found`
   - `Skipped — not a .flac file`
   - `Output folder not available — choose another in “Save to”`
 - CLI contract:
-  - `FlacToAiff --convert [--cdj] <file-or-folder>... <outputDir>`
+  - `FlacToAiff --convert [--format original|max48|cd] <file-or-folder>... <outputDir>`
   - prints `OK <path>` / `SKIP <path>` on stdout, and `ERROR <name>: <message>` on stderr
-  - exits 0 when all are OK/SKIP, 1 if any failed or was skipped as non-FLAC, 2 on usage error
+  - exits 0 when all are OK/SKIP, 1 if any failed or was skipped as non-FLAC, 2 on usage error (incl. unknown `--format`)
 - Commits end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - Verify with `./build.sh && ./test.sh` from the repo root. The suite must end with `PASS`.
 
@@ -41,7 +41,7 @@
 | --- | --- | --- |
 | `Sources/Converter.swift` | modify | Single-file conversion: atomic publish, skip-if-exists, stale-partial cleanup, CDJ format planning. Returns `Outcome`. |
 | `Sources/Jobs.swift` | create | `Job`, `WorkItem`, `Row`. `Jobs.expand` (files/folders → work) and `Jobs.run` (work → `Row`). UI-free; used by the CLI and the queue. *(The spec placed this inside `ConversionQueue.swift`; it is split out so the CLI doesn't depend on the observable queue.)* |
-| `Sources/Settings.swift` | create | Persisted `outputFolder` / `cdjMode`. |
+| `Sources/Settings.swift` | create | Persisted `outputFolder` / `mode`. |
 | `Sources/ConversionQueue.swift` | create | Observable serial pipeline: `enqueue`, `rows`, `isWorking`, `outputs`, `clear`. |
 | `Sources/main.swift` | modify | CLI parsing; `DropView` (drop zone, settings bar, rows); `AppDelegate` (owns settings and queue, `application(_:open:)`). |
 | `build.sh` | modify | Compile `Sources/*.swift`; `CFBundleDocumentTypes` in `Info.plist`. |
@@ -310,21 +310,22 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 2: CDJ mode (max 24-bit / 48 kHz)
+### Task 2: Output formats (Original / CDJ max 24-bit 48 kHz / CD 16-bit 44.1 kHz)
 
 **Files:**
-- Modify: `Sources/Converter.swift` (replace `detectBitDepth` with `probe`; add `ConvertOptions`, `SourceFormat`, `OutputFormat`, `outputFormat`, note helpers; extend `convert`)
-- Modify: `Sources/main.swift` (CLI `--cdj`)
+- Modify: `Sources/Converter.swift` (replace `detectBitDepth` with `probe`; add `OutputMode`, `ConvertOptions`, `SourceFormat`, `OutputFormat`, `outputFormat`, note helpers; extend `convert`)
+- Modify: `Sources/main.swift` (CLI `--format`)
 - Modify: `test.sh` (refactor check 11 into functions; new 13, 14)
 - Modify: `README.md`
 
 **Interfaces:**
 - Consumes: `Outcome`, `convert` from Task 1.
 - Produces:
-  - `struct ConvertOptions { var cdjMode = false }`
+  - `enum OutputMode: String, CaseIterable, Identifiable { case original, max48, cd }`
+  - `struct ConvertOptions { var mode: OutputMode = .original }`
   - `Converter.convert(flacURL: URL, destDir: URL, options: ConvertOptions = ConvertOptions()) throws -> Outcome`
-  - `Outcome.converted`'s `note` is non-nil when CDJ mode reduced the format, e.g. `"96 → 48 kHz"` or `"96 → 48 kHz, 32 → 24-bit"`.
-  - CLI accepts `--cdj` directly after `--convert`.
+  - `Outcome.converted`'s `note` is non-nil when a mode reduced the format, e.g. `"96 → 48 kHz"` or `"96 → 44.1 kHz, 24 → 16-bit"`.
+  - CLI accepts `--format original|max48|cd` directly after `--convert`.
 
 - [ ] **Step 1: Refactor check 11 and write the failing tests**
 
@@ -381,39 +382,55 @@ check_tags "$DEST/tagged.aiff" || { echo "FAIL: tags not carried over"; exit 1; 
 After check 12, add:
 
 ```bash
-echo "13. CDJ mode: hi-res → same-family 44.1/48 kHz at 24-bit; CD quality untouched; off by default…"
+echo "13. Output formats: max48 / cd / original, plus bad --format…"
 say -o "$TMP/hr96.aiff" --data-format=BEI24@96000 "high resolution"
 afconvert -f flac -d flac "$TMP/hr96.aiff" "$TMP/hr96.flac"
 say -o "$TMP/hr88.aiff" --data-format=BEI24@88200 "high resolution"
 afconvert -f flac -d flac "$TMP/hr88.aiff" "$TMP/hr88.flac"
-CDJ="$TMP/cdj"
-for f in hr96 hr88 t16; do "$BIN" --convert --cdj "$TMP/$f.flac" "$CDJ" >/dev/null; done
-fmt "$CDJ/hr96.aiff" | grep -q "48000 Hz.*24-bit big-endian" || { echo "FAIL: 96k not → 24/48"; fmt "$CDJ/hr96.aiff"; exit 1; }
-fmt "$CDJ/hr88.aiff" | grep -q "44100 Hz.*24-bit big-endian" || { echo "FAIL: 88.2k not → 24/44.1"; fmt "$CDJ/hr88.aiff"; exit 1; }
-fmt "$CDJ/t16.aiff"  | grep -q "44100 Hz.*16-bit big-endian" || { echo "FAIL: 16/44.1 altered in CDJ mode"; exit 1; }
-"$BIN" --convert "$TMP/hr96.flac" "$TMP/nocdj" >/dev/null
-fmt "$TMP/nocdj/hr96.aiff" | grep -q "96000 Hz.*24-bit big-endian" || { echo "FAIL: 96k resampled without --cdj"; exit 1; }
+M48="$TMP/max48"
+for f in hr96 hr88 t16; do "$BIN" --convert --format max48 "$TMP/$f.flac" "$M48" >/dev/null; done
+fmt "$M48/hr96.aiff" | grep -q "48000 Hz.*24-bit big-endian" || { echo "FAIL: max48: 96k not → 24/48"; fmt "$M48/hr96.aiff"; exit 1; }
+fmt "$M48/hr88.aiff" | grep -q "44100 Hz.*24-bit big-endian" || { echo "FAIL: max48: 88.2k not → 24/44.1"; fmt "$M48/hr88.aiff"; exit 1; }
+fmt "$M48/t16.aiff"  | grep -q "44100 Hz.*16-bit big-endian" || { echo "FAIL: max48 altered 16/44.1"; exit 1; }
+CDQ="$TMP/cdq"
+for f in hr96 tone t16; do "$BIN" --convert --format cd "$TMP/$f.flac" "$CDQ" >/dev/null; done
+fmt "$CDQ/hr96.aiff" | grep -q "44100 Hz.*16-bit big-endian" || { echo "FAIL: cd: 24/96 not → 16/44.1"; fmt "$CDQ/hr96.aiff"; exit 1; }
+fmt "$CDQ/tone.aiff" | grep -q "44100 Hz.*16-bit big-endian" || { echo "FAIL: cd: 24/44.1 not → 16/44.1"; exit 1; }
+cmp -s "$CDQ/t16.aiff" "$DEST/t16.aiff" || { echo "FAIL: cd mode altered a 16/44.1 source"; exit 1; }
+"$BIN" --convert "$TMP/hr96.flac" "$TMP/orig" >/dev/null
+fmt "$TMP/orig/hr96.aiff" | grep -q "96000 Hz.*24-bit big-endian" || { echo "FAIL: default format resampled 96k"; exit 1; }
+set +e; "$BIN" --convert --format bogus "$TMP/tone.flac" "$TMP/orig" 2>/dev/null; RC=$?; set -e
+[ "$RC" -eq 2 ] || { echo "FAIL: unknown --format should exit 2, got $RC"; exit 1; }
 
-echo "14. Tags survive CDJ resampling…"
+echo "14. Tags survive resampling + dither…"
 tag_flac "$TMP/hr96.flac" "$TMP/taggedhr.flac"
-"$BIN" --convert --cdj "$TMP/taggedhr.flac" "$CDJ" >/dev/null
-fmt "$CDJ/taggedhr.aiff" | grep -q "48000 Hz" || { echo "FAIL: tagged hi-res not resampled"; exit 1; }
-check_tags "$CDJ/taggedhr.aiff" || { echo "FAIL: tags lost under CDJ mode"; exit 1; }
+"$BIN" --convert --format cd "$TMP/taggedhr.flac" "$CDQ" >/dev/null
+fmt "$CDQ/taggedhr.aiff" | grep -q "44100 Hz.*16-bit" || { echo "FAIL: tagged hi-res not converted to CD format"; exit 1; }
+check_tags "$CDQ/taggedhr.aiff" || { echo "FAIL: tags lost in cd mode"; exit 1; }
 ```
 
 - [ ] **Step 2: Run the tests and verify they fail**
 
 Run: `./build.sh && ./test.sh`
-Expected: check 11 still passes. Check 13 fails: without `--cdj` support the CLI sees 3 arguments and exits 2 with `usage:`, and `set -e` aborts the script.
+Expected: check 11 still passes. Check 13 fails: without `--format` support the CLI sees 4 arguments and exits 2 with `usage:`, and `set -e` aborts the script.
 
 - [ ] **Step 3: Implement in `Sources/Converter.swift`**
 
 Add above `enum Converter`:
 
 ```swift
+/// Output compatibility target. Raw values are the CLI `--format` names and the stored setting.
+enum OutputMode: String, CaseIterable, Identifiable {
+    case original   // lossless: depth matched, rate kept
+    case max48      // CDJ-2000NXS-class players: ≤24-bit, ≤48 kHz
+    case cd         // audio-CD burning: 16-bit / 44.1 kHz
+
+    var id: String { rawValue }
+}
+
 /// Per-conversion choices.
 struct ConvertOptions {
-    var cdjMode = false   // cap at 24-bit / 48 kHz for CDJ-2000-class players
+    var mode: OutputMode = .original
 }
 ```
 
@@ -430,6 +447,7 @@ Inside `enum Converter`, replace `detectBitDepth` with:
     struct OutputFormat: Equatable {
         let depth: Int
         let rate: Int?
+        let dither: Bool
     }
 
     /// Detect source bit depth and sample rate via one `afinfo -x` (XML) call.
@@ -450,21 +468,31 @@ Inside `enum Converter`, replace `detectBitDepth` with:
         return SourceFormat(depth: depth, rate: rate)
     }
 
-    /// Lossless by default. CDJ mode caps at 24-bit and resamples > 48 kHz to the
-    /// same-family rate (88.2/176.4 → 44.1, 96/192 → 48) so the ratio stays an integer.
-    static func outputFormat(for source: SourceFormat, cdj: Bool) -> OutputFormat {
-        let detected = source.depth ?? 24   // on detection failure, fail toward lossless
-        let depth: Int
-        switch detected {
-        case ...16:    depth = 16   // 4–16-bit → BEI16 (lossless up-conversion for <16)
-        case 17...24:  depth = 24   // 17–24-bit (incl. 20-bit) → BEI24
-        default:       depth = cdj ? 24 : 32
+    /// The output format for `mode`. Original is lossless; max48 caps at 24-bit and resamples
+    /// > 48 kHz to the same-family rate (88.2/176.4 → 44.1, 96/192 → 48) so the ratio stays an
+    /// integer; cd forces 16-bit / 44.1 kHz with dither when reducing bit depth.
+    static func outputFormat(for source: SourceFormat, mode: OutputMode) -> OutputFormat {
+        let matched: Int
+        switch source.depth ?? 24 {   // on detection failure, fail toward lossless
+        case ...16:    matched = 16   // 4–16-bit → BEI16 (lossless up-conversion for <16)
+        case 17...24:  matched = 24   // 17–24-bit (incl. 20-bit) → BEI24
+        default:       matched = 32   // 25–32-bit → BEI32
         }
-        guard cdj, let rate = source.rate, rate > 48_000 else { return OutputFormat(depth: depth, rate: nil) }
-        return OutputFormat(depth: depth, rate: rate % 44_100 == 0 ? 44_100 : 48_000)
+        switch mode {
+        case .original:
+            return OutputFormat(depth: matched, rate: nil, dither: false)
+        case .max48:
+            let depth = min(matched, 24)
+            guard let rate = source.rate, rate > 48_000 else { return OutputFormat(depth: depth, rate: nil, dither: false) }
+            return OutputFormat(depth: depth, rate: rate % 44_100 == 0 ? 44_100 : 48_000, dither: false)
+        case .cd:
+            // Unknown rate → resample anyway: CD players accept nothing but 44.1 kHz.
+            return OutputFormat(depth: 16, rate: source.rate == 44_100 ? nil : 44_100,
+                                dither: (source.depth ?? 24) > 16)
+        }
     }
 
-    /// "96 → 48 kHz, 32 → 24-bit" for whatever was reduced; nil when lossless.
+    /// "96 → 44.1 kHz, 24 → 16-bit" for whatever was reduced; nil when lossless.
     private static func reductionNote(_ source: SourceFormat, _ out: OutputFormat) -> String? {
         var parts: [String] = []
         if let to = out.rate, let from = source.rate { parts.append("\(khz(from)) → \(khz(to)) kHz") }
@@ -479,18 +507,19 @@ Inside `enum Converter`, replace `detectBitDepth` with:
 
 In `convert`:
 - Change the signature to `static func convert(flacURL: URL, destDir: URL, options: ConvertOptions = ConvertOptions()) throws -> Outcome`.
-- Update the doc comment's second line to: `/// Lossless by default (see outputFormat); options.cdjMode may cap depth/rate.`
+- Replace the doc comment's second and third lines (`/// Preserves sample rate; …` / `/// big-endian signed PCM), …`) with `/// Format follows options.mode (see outputFormat); .original is lossless.`
 - Replace the block from `let detected = …` through the `let (code, err) = run(…)` line with:
 
 ```swift
                 let source = probe(flacURL)
-                let format = outputFormat(for: source, cdj: options.cdjMode)
+                let format = outputFormat(for: source, mode: options.mode)
                 var args = ["-f", "AIFF"]
                 if let rate = format.rate {
                     args += ["-d", "BEI\(format.depth)@\(rate)", "-r", "127", "--src-complexity", "bats"]
                 } else {
-                    args += ["-d", "BEI\(format.depth)"]   // unchanged lossless command line
+                    args += ["-d", "BEI\(format.depth)"]   // with no dither: today's lossless command line
                 }
+                if format.dither { args += ["--dither", "1"] }   // TPDF
                 let (code, err) = run(afconvert, args + [flacURL.path, tmp.path])
 ```
 
@@ -500,20 +529,26 @@ Replace `return .converted(final, note: nil)` with:
                 return .converted(final, note: reductionNote(source, format))
 ```
 
-- [ ] **Step 4: Add `--cdj` to the CLI in `Sources/main.swift`**
+- [ ] **Step 4: Add `--format` to the CLI in `Sources/main.swift`**
 
-Replace the CLI block's opening through the `do {` with (Task 3 rewrites this block):
+Replace the CLI block's opening through the `do {` with (Task 3 rewrites the rest of this block):
 
 ```swift
+func cliUsage() -> Never {
+    FileHandle.standardError.write(
+        "usage: FlacToAiff --convert [--format original|max48|cd] <file-or-folder>... <outputDir>\n".data(using: .utf8)!)
+    exit(2)
+}
+
 if cliArgs.count >= 2 && cliArgs[1] == "--convert" {
     var args = Array(cliArgs.dropFirst(2))
     var options = ConvertOptions()
-    if args.first == "--cdj" { options.cdjMode = true; args.removeFirst() }
-    guard args.count == 2 else {
-        FileHandle.standardError.write(
-            "usage: FlacToAiff --convert [--cdj] <in.flac> <destDir>\n".data(using: .utf8)!)
-        exit(2)
+    if args.first == "--format" {
+        guard args.count >= 2, let mode = OutputMode(rawValue: args[1]) else { cliUsage() }
+        options.mode = mode
+        args.removeFirst(2)
     }
+    guard args.count == 2 else { cliUsage() }
     do {
         switch try Converter.convert(
             flacURL: URL(fileURLWithPath: args[0]),
@@ -521,6 +556,8 @@ if cliArgs.count >= 2 && cliArgs[1] == "--convert" {
             options: options
         ) {
 ```
+
+Keep `let cliArgs = CommandLine.arguments` above `func cliUsage`.
 
 - [ ] **Step 5: Run the tests and verify they pass**
 
@@ -530,13 +567,13 @@ Expected: `PASS: all checks.`
 - [ ] **Step 6: Update `README.md`**
 
 After the `**Lossless**` feature bullet, add:
-`- **CDJ mode** (optional) — caps output at 24-bit / 48 kHz so every file plays on CDJ-2000-class players. Hi-res files are resampled to the matching rate (96 → 48 kHz, 88.2 → 44.1 kHz); files already within limits stay bit-identical.`
+`- **Compatibility formats** (optional) — pick *CDJ: max 24-bit / 48 kHz* for CDJ-2000NXS, 2000, 900NXS, 850, 350 and XDJ-1000MK2 (hi-res files are resampled, 96 → 48 kHz, 88.2 → 44.1 kHz), or *CD: 16-bit / 44.1 kHz* (dithered) for burning audio CDs for CD-only players. Files already within limits stay bit-identical.`
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add Sources/Converter.swift Sources/main.swift test.sh README.md
-git commit -m "Add CDJ mode: cap output at 24-bit / 48 kHz
+git commit -m "Add output formats: original, CDJ max 24-bit/48 kHz, CD 16-bit/44.1 kHz
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -720,19 +757,19 @@ Add `case outputFolderUnavailable` to `ConvertError`, and to `description`:
 
 - [ ] **Step 5: Rewrite the CLI block in `Sources/main.swift`**
 
-Replace everything from `let cliArgs = CommandLine.arguments` through the CLI block's closing `}` with:
+Replace the `if cliArgs.count >= 2 && cliArgs[1] == "--convert" { … }` block (keep `let cliArgs` and `func cliUsage` from Task 2 above it) with:
 
 ```swift
 let cliArgs = CommandLine.arguments
 if cliArgs.count >= 2 && cliArgs[1] == "--convert" {
     var args = Array(cliArgs.dropFirst(2))
     var options = ConvertOptions()
-    if args.first == "--cdj" { options.cdjMode = true; args.removeFirst() }
-    guard args.count >= 2 else {
-        FileHandle.standardError.write(
-            "usage: FlacToAiff --convert [--cdj] <file-or-folder>... <outputDir>\n".data(using: .utf8)!)
-        exit(2)
+    if args.first == "--format" {
+        guard args.count >= 2, let mode = OutputMode(rawValue: args[1]) else { cliUsage() }
+        options.mode = mode
+        args.removeFirst(2)
     }
+    guard args.count >= 2 else { cliUsage() }
     let outputRoot = URL(fileURLWithPath: args.removeLast(), isDirectory: true)
     try? FileManager.default.createDirectory(at: outputRoot, withIntermediateDirectories: true)
     var failed = false
@@ -750,7 +787,7 @@ if cliArgs.count >= 2 && cliArgs[1] == "--convert" {
 }
 ```
 
-Also update the comment above it to `// MARK: - Headless CLI mode (used by test.sh): --convert [--cdj] <file-or-folder>... <outputDir>`.
+Also update the comment above it to `// MARK: - Headless CLI mode (used by test.sh): --convert [--format original|max48|cd] <file-or-folder>... <outputDir>`.
 
 - [ ] **Step 6: Compile all sources in `build.sh`**
 
@@ -768,7 +805,7 @@ Expected: `PASS: all checks.` Check 10 (`--convert` with one path exits 2 with `
 - In Development, replace the headless example with:
 
   ```bash
-  build/FlacToAiff.app/Contents/MacOS/FlacToAiff --convert [--cdj] <file-or-folder>... <output-dir>
+  build/FlacToAiff.app/Contents/MacOS/FlacToAiff --convert [--format original|max48|cd] <file-or-folder>... <output-dir>
   ```
 
 - Add `Sources/Jobs.swift` to the file table: `Expands dropped files/folders into conversions and runs them`.
@@ -795,7 +832,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 **Interfaces:**
 - Consumes: `Jobs.expand`, `Jobs.run`, `Row`, `ConvertOptions` (Task 3).
 - Produces:
-  - `final class Settings: ObservableObject { @Published var outputFolder: URL; @Published var cdjMode: Bool; static var downloads: URL }`
+  - `final class Settings: ObservableObject { @Published var outputFolder: URL; @Published var mode: OutputMode; static var downloads: URL }`
   - `final class ConversionQueue: ObservableObject { init(settings:); @Published private(set) var rows: [Row]; @Published private(set) var isWorking: Bool; var outputs: [URL]; func enqueue(_ urls: [URL]); func clear() }`
   - `AppDelegate.queue`, used by Task 5.
 
@@ -808,15 +845,15 @@ import Foundation
 final class Settings: ObservableObject {
     private enum Key {
         static let outputFolder = "outputFolder"
-        static let cdjMode = "cdjMode"
+        static let mode = "outputMode"
     }
     private let defaults: UserDefaults
 
     @Published var outputFolder: URL {
         didSet { defaults.set(outputFolder.path, forKey: Key.outputFolder) }
     }
-    @Published var cdjMode: Bool {
-        didSet { defaults.set(cdjMode, forKey: Key.cdjMode) }
+    @Published var mode: OutputMode {
+        didSet { defaults.set(mode.rawValue, forKey: Key.mode) }
     }
 
     static var downloads: URL {
@@ -828,7 +865,7 @@ final class Settings: ObservableObject {
         self.defaults = defaults
         outputFolder = defaults.string(forKey: Key.outputFolder)
             .map { URL(fileURLWithPath: $0, isDirectory: true) } ?? Self.downloads
-        cdjMode = defaults.bool(forKey: Key.cdjMode)   // false when never set
+        mode = defaults.string(forKey: Key.mode).flatMap(OutputMode.init(rawValue:)) ?? .original
     }
 }
 ```
@@ -858,7 +895,7 @@ final class ConversionQueue: ObservableObject {
     func enqueue(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
         let root = settings.outputFolder
-        let options = ConvertOptions(cdjMode: settings.cdjMode)
+        let options = ConvertOptions(mode: settings.mode)
         batchesInFlight += 1
         isWorking = true
         worker.async {
@@ -906,26 +943,38 @@ struct DropView: View {
             }
         }
         .padding(16)
-        .frame(minWidth: 400, minHeight: 320)
+        .frame(minWidth: 400, minHeight: 400)
     }
 
     private var settingsBar: some View {
-        HStack(spacing: 6) {
-            Text("Save to:").foregroundColor(.secondary)
-            Button(action: chooseOutputFolder) {
-                HStack(spacing: 4) {
-                    Text(settings.outputFolder.lastPathComponent)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Image(systemName: "chevron.up.chevron.down").font(.caption2)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text("Save to:").foregroundColor(.secondary)
+                Button(action: chooseOutputFolder) {
+                    HStack(spacing: 4) {
+                        Text(settings.outputFolder.lastPathComponent)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Image(systemName: "chevron.up.chevron.down").font(.caption2)
+                    }
+                }
+                .help(settings.outputFolder.path)
+                Spacer()
+            }
+            Picker("Format:", selection: $settings.mode) {
+                ForEach(OutputMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
                 }
             }
-            .help(settings.outputFolder.path)
-            Spacer(minLength: 12)
-            Toggle("CDJ mode (max 24-bit / 48 kHz)", isOn: $settings.cdjMode)
-                .help("Hi-res files are resampled so they play on CDJ-2000-class players. Files already within limits stay lossless.")
+            .pickerStyle(.menu)
+            .fixedSize()
+            Text(settings.mode.explanation)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .font(.callout)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var dropZone: some View {
@@ -1018,6 +1067,28 @@ struct DropView: View {
     }
 }
 
+/// Menu titles and player-compatibility explanations (wording from the spec's "Output formats" table).
+extension OutputMode {
+    var title: String {
+        switch self {
+        case .original: return "Original (lossless)"
+        case .max48:    return "CDJ: max 24-bit / 48 kHz"
+        case .cd:       return "CD: 16-bit / 44.1 kHz"
+        }
+    }
+
+    var explanation: String {
+        switch self {
+        case .original:
+            return "Unchanged quality. For CDJ-3000/3000X, CDJ-2000NXS2 (USB/SD), rekordbox, Serato and Music."
+        case .max48:
+            return "For CDJ-2000NXS, 2000, 900NXS, 850, 350 and XDJ-1000MK2: hi-res files are lowered to 48 kHz / 24-bit."
+        case .cd:
+            return "For burning audio CDs for CD-only players (CDJ-1000MK3, 800MK2, 400): everything becomes 16-bit / 44.1 kHz."
+        }
+    }
+}
+
 private extension Row.Kind {
     var symbol: String {
         switch self {
@@ -1057,7 +1128,7 @@ In `final class AppDelegate`, replace `private var window: NSWindow!` with:
 
 In `applicationDidFinishLaunching`:
 - Replace `window.contentView = NSHostingView(rootView: DropView())` with `window.contentView = NSHostingView(rootView: DropView(queue: queue, settings: settings))`.
-- Change `contentRect` width from `380` to `420`.
+- Change `contentRect` from `width: 380, height: 320` to `width: 420, height: 420` (the settings bar now has three lines).
 
 - [ ] **Step 5: Build and run the automated suite**
 
@@ -1068,26 +1139,26 @@ Expected: `PASS: all checks.` The CLI path is unchanged, so this guards against 
 
 Run: `open build/FlacToAiff.app`
 Verify each of these:
-1. The settings bar shows `Save to: Downloads ⌃⌄` and an unchecked `CDJ mode (max 24-bit / 48 kHz)`.
+1. The settings bar shows `Save to: Downloads ⌃⌄`, `Format: Original (lossless)`, and that mode's explanation underneath. Switching the menu updates the explanation.
 2. Dropping a FLAC gives a green ✓ row `→ name.aiff`. Dropping it again gives a grey `Already converted` row.
 3. Clicking `Save to`, choosing a new empty folder, then dropping writes the AIFF there.
-4. Checking CDJ mode and dropping a 96 kHz FLAC gives a row ending in `(96 → 48 kHz)`. Make one with `say -o /tmp/x.aiff --data-format=BEI24@96000 hi && afconvert -f flac -d flac /tmp/x.aiff /tmp/x.flac`.
+4. With `CDJ: max 24-bit / 48 kHz`, dropping a 96 kHz FLAC gives a row ending in `(96 → 48 kHz)`. With `CD: 16-bit / 44.1 kHz`, a new copy (delete the first one) ends in `(96 → 44.1 kHz, 24 → 16-bit)`. Make one with `say -o /tmp/x.aiff --data-format=BEI24@96000 hi && afconvert -f flac -d flac /tmp/x.aiff /tmp/x.flac`.
 5. Dropping a second batch while a large first batch runs appends rows, and no drop is ignored.
-6. Quitting with ⌘Q and relaunching keeps the folder and the CDJ checkbox.
+6. Quitting with ⌘Q and relaunching keeps the folder and the Format choice.
 7. Choosing a folder, then renaming it in Finder and dropping a file, gives a red row `Output folder not available — choose another in “Save to”`.
 
 - [ ] **Step 7: Update `README.md`**
 
 - Intro: replace `the converted copies appear in your **Downloads** folder` with `the converted copies appear in your chosen output folder (Downloads by default)`.
-- Usage step 3: `3. Find the converted \`.aiff\` files in the **Save to** folder shown under the drop zone (Downloads by default). Click it to choose another folder; tick **CDJ mode** to cap output at 24-bit / 48 kHz.`
+- Usage step 3: `3. Find the converted \`.aiff\` files in the **Save to** folder shown under the drop zone (Downloads by default). Click it to choose another folder. Use **Format** to pick a compatibility mode; the line under it says which players it is for.`
 - Troubleshooting `Downloads folder permission prompt`: change the heading to `**Folder permission prompt.**` and the first sentence to `The first time the app writes to Downloads (or another protected folder like Desktop or Documents), macOS asks for permission — click **OK**.`
-- File table: add `Sources/Settings.swift` (`Remembered output folder and CDJ mode`) and `Sources/ConversionQueue.swift` (`Background conversion queue shared by the window, Dock and Open With`). Change the `main.swift` description to `SwiftUI window (drop zone, settings bar, results), app delegate, and the headless \`--convert\` mode`.
+- File table: add `Sources/Settings.swift` (`Remembered output folder and output format`) and `Sources/ConversionQueue.swift` (`Background conversion queue shared by the window, Dock and Open With`). Change the `main.swift` description to `SwiftUI window (drop zone, settings bar, results), app delegate, and the headless \`--convert\` mode`.
 
 - [ ] **Step 8: Commit**
 
 ```bash
 git add Sources/Settings.swift Sources/ConversionQueue.swift Sources/main.swift README.md
-git commit -m "Add output folder setting, CDJ toggle and a queued conversion pipeline
+git commit -m "Add output folder setting, Format menu and a queued conversion pipeline
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
