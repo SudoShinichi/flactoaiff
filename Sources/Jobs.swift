@@ -21,6 +21,7 @@ struct Row: Identifiable {
     let kind: Kind
     let detail: String
     let output: URL?   // the AIFF (converted or already converted), for Reveal in Finder
+    let checks: String?   // what verification covered ("verified" …), for converted rows
 }
 
 /// Turning dropped files/folders into work, and work into rows. UI-free.
@@ -110,28 +111,28 @@ enum Jobs {
     static func run(_ item: WorkItem, outputRoot: URL, options: ConvertOptions) -> Row {
         switch item {
         case .note(let name, let message):
-            return Row(name: name, kind: .skipped, detail: message, output: nil)
+            return Row(name: name, kind: .skipped, detail: message, output: nil, checks: nil)
         case .job(let job):
             let name = job.source.lastPathComponent
             var isDir: ObjCBool = false
             guard FileManager.default.fileExists(atPath: outputRoot.path, isDirectory: &isDir), isDir.boolValue,
                   FileManager.default.isWritableFile(atPath: outputRoot.path) else {
                 return Row(name: name, kind: .failed,
-                           detail: ConvertError.outputFolderUnavailable.description, output: nil)
+                           detail: ConvertError.outputFolderUnavailable.description, output: nil, checks: nil)
             }
             do {
                 switch try Converter.convert(flacURL: job.source, destDir: job.destDir, options: options) {
-                case .converted(let out, let note):
+                case .converted(let out, let note, let checks):
                     return Row(name: name, kind: .converted,
-                               detail: "→ \(out.lastPathComponent)" + (note.map { " (\($0))" } ?? ""),
-                               output: out)
+                               detail: "→ \(out.lastPathComponent)" + (note.map { " (\($0))" } ?? "") + " · \(checks.label)",
+                               output: out, checks: checks.label)
                 case .alreadyConverted(let out):
-                    return Row(name: name, kind: .alreadyConverted, detail: "Already converted", output: out)
+                    return Row(name: name, kind: .alreadyConverted, detail: "Already converted", output: out, checks: nil)
                 }
             } catch ConvertError.notFlac {
-                return Row(name: name, kind: .skipped, detail: ConvertError.notFlac.description, output: nil)
+                return Row(name: name, kind: .skipped, detail: ConvertError.notFlac.description, output: nil, checks: nil)
             } catch {
-                return Row(name: name, kind: .failed, detail: "\(error)", output: nil)
+                return Row(name: name, kind: .failed, detail: "\(error)", output: nil, checks: nil)
             }
         }
     }

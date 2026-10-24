@@ -6,12 +6,13 @@ enum ConvertError: Error, CustomStringConvertible {
     case afconvertFailed(String)
     case saveFailed(String)
     case outputFolderUnavailable
+    case verificationFailed(String)
 
     var description: String {
         switch self {
         case .notFlac:
             return "Skipped — not a .flac file"
-        case .afconvertFailed(let message), .saveFailed(let message):
+        case .afconvertFailed(let message), .saveFailed(let message), .verificationFailed(let message):
             return message
         case .outputFolderUnavailable:
             return "Output folder not available — choose another in “Save to”"
@@ -21,7 +22,7 @@ enum ConvertError: Error, CustomStringConvertible {
 
 /// What a single conversion did.
 enum Outcome {
-    case converted(URL, note: String?)   // note: what wasn't lossless, e.g. "96 → 48 kHz"
+    case converted(URL, note: String?, checks: Checks)   // note: what wasn't lossless, e.g. "96 → 48 kHz"
     case alreadyConverted(URL)
 }
 
@@ -129,6 +130,7 @@ enum Converter {
             let tmp = try reserveTemp(in: destDir)
             do {
                 let source = probe(flacURL)
+                let streamInfo = TagIO.flacStreamInfo(flacURL)
                 let format = outputFormat(for: source, mode: options.mode)
                 var args = ["-f", "AIFF"]
                 if let rate = format.rate {
@@ -142,26 +144,22 @@ enum Converter {
                     throw ConvertError.afconvertFailed(err.isEmpty ? "afconvert exited with code \(code)" : err.trimmingCharacters(in: .whitespacesAndNewlines))
                 }
 
-                // afconvert happily converts a truncated FLAC (a download or copy still being
-                // written), so check the length against STREAMINFO. Resampled lengths are within ±1.
-                if let info = TagIO.flacStreamInfo(flacURL), info.samples > 0, let got = TagIO.aiffFrameCount(tmp) {
-                    let expected = Double(info.samples) * Double(format.rate ?? info.rate) / Double(info.rate)
-                    guard abs(Double(got) - expected) <= 2 else {
-                        throw ConvertError.afconvertFailed(
-                            "FLAC is incomplete — only \(Int(Double(got) / expected * 100))% of the audio is there")
-                    }
-                }
-
                 // afconvert drops all tags; carry title/artist/album/cover etc. over as an ID3 chunk.
-                if let tag = TagIO.id3v23(TagIO.readFlacTags(flacURL)) {
+                let frames = TagIO.id3Frames(TagIO.readFlacTags(flacURL))
+                if let tag = TagIO.id3v23(frames) {
                     try TagIO.appendID3Chunk(tag, to: tmp)
                 }
+
+                let lossless = format.rate == nil && !format.dither
+                    && (streamInfo?.bitsPerSample ?? Int.max) <= format.depth
+                let checks = try Verifier.verify(aiff: tmp, source: streamInfo, expected: format, lossless: lossless,
+                                                writtenFrames: frames)
 
                 guard try publish(tmp, as: final) else {
                     try? FileManager.default.removeItem(at: tmp)
                     return .alreadyConverted(final)
                 }
-                return .converted(final, note: reductionNote(source, format))
+                return .converted(final, note: reductionNote(source, format), checks: checks)
             } catch {
                 try? FileManager.default.removeItem(at: tmp)
                 throw error
