@@ -55,7 +55,7 @@ AVFoundation was confirmed to return every frame the app writes: non-ASCII text,
 - Every frame the app wrote must come back with the same value. That includes TXXX user fields, the COMM comment, and every APIC picture byte-for-byte.
 - The ID3 builder is the source of truth for what was written. It can return the list of written frames alongside the tag bytes.
 - If AVFoundation doesn't surface a frame the app wrote, the builder may verify that frame by parsing the AIFF's `ID3 ` chunk directly. That fallback must be limited to frames AVFoundation demonstrably doesn't expose. Title, artist, album and artwork must always pass through AVFoundation, because that is what Apple Music sees.
-- A mismatch fails, naming the field: `Tag check failed: artwork missing`, `Tag check failed: BPM`.
+- A mismatch fails, naming the field: `Tag check failed: artwork`, `Tag check failed: BPM`.
 
 ### Ordering
 afconvert → length check → append ID3 → **verify** → publish. Verification runs on the temp file, so nothing unverified ever appears under the final name.

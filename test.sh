@@ -77,7 +77,8 @@ set -e
 grep -q "usage:" "$TMP/usage.txt" || { echo "FAIL: no usage message"; exit 1; }
 
 # tag_flac <src.flac> <dst.flac> [KEY=VALUE…]: copy src, adding TITLE/ARTIST/ALBUM (non-ASCII) Vorbis
-# comments plus any extras. An extra PICTURE=1 adds a tiny front-cover PICTURE block.
+# comments plus any extras (a literal \0 in one becomes NUL). PICTURE=1 adds a tiny front-cover
+# PICTURE block, PICTURE=2 that plus a back cover.
 tag_flac() {
 python3 -I - "$@" <<'PY'
 import sys, struct
@@ -89,14 +90,19 @@ while True:   # copy metadata blocks, clearing the "last block" flag
     out += bytes([h & 0x7F]) + d[i+1:i+4+n]
     i += 4 + n
     if h & 0x80: break
-vals = [b'TITLE=Song Title', b'ARTIST=Some Artist', 'ALBUM=Album 蒸發'.encode()] + [e.encode() for e in extra if e != 'PICTURE=1']
+vals = [b'TITLE=Song Title', b'ARTIST=Some Artist', 'ALBUM=Album 蒸發'.encode()] + [e.replace('\\0', '\0').encode() for e in extra if not e.startswith('PICTURE=')]   # literal \0 in an argument becomes NUL
 body = struct.pack('<I', 0) + struct.pack('<I', len(vals)) + b''.join(struct.pack('<I', len(v)) + v for v in vals)
-pics = 'PICTURE=1' in extra
+pics = 'PICTURE=1' in extra or 'PICTURE=2' in extra
 out += bytes([0x04 if pics else 0x84]) + len(body).to_bytes(3, 'big') + body
 if pics:   # front cover, 16 header-ish JPEG bytes: players only need the bytes back
     jpg = bytes.fromhex('ffd8ffe000104a46494600010100000100010000ffd9')
     pic = struct.pack('>I', 3) + struct.pack('>I', 10) + b'image/jpeg' + struct.pack('>I', 0) + struct.pack('>5I', 1, 1, 24, 0, len(jpg)) + jpg
-    out += bytes([0x86]) + len(pic).to_bytes(3, 'big') + pic
+    last = 'PICTURE=2' not in extra
+    out += bytes([0x86 if last else 0x06]) + len(pic).to_bytes(3, 'big') + pic
+    if not last:   # plus a back cover (type 4) with different bytes
+        jpg2 = jpg[:-2] + b'back' + jpg[-2:]
+        pic2 = struct.pack('>I', 4) + struct.pack('>I', 10) + b'image/jpeg' + struct.pack('>I', 0) + struct.pack('>5I', 1, 1, 24, 0, len(jpg2)) + jpg2
+        out += bytes([0x86]) + len(pic2).to_bytes(3, 'big') + pic2
 out += d[i:]
 open(dst, 'wb').write(out)
 PY
@@ -376,7 +382,7 @@ afinfo "$TMP/b20.flac" | grep -q "I20" || { echo "FAIL: test setup: hand-made FL
 cp "$TMP/tone.flac" "$TMP/badmd5.flac"
 printf '\x5a' | dd of="$TMP/badmd5.flac" bs=1 seek=30 conv=notrunc 2>/dev/null
 set +e; "$BIN" --convert "$TMP/badmd5.flac" "$TMP/v2" >/dev/null 2>"$TMP/v.err"; RC=$?; set -e
-[ "$RC" -eq 1 ] && grep -q "Audio doesn't match the FLAC" "$TMP/v.err" || { echo "FAIL: tampered MD5 not refused"; cat "$TMP/v.err"; exit 1; }
+[ "$RC" -eq 1 ] && grep -q "Audio doesn't match the FLAC's checksum" "$TMP/v.err" || { echo "FAIL: tampered MD5 not refused"; cat "$TMP/v.err"; exit 1; }
 [ ! -e "$TMP/v2/badmd5.aiff" ] && ! ls -A "$TMP/v2" 2>/dev/null | grep -q "\.partial$" || { echo "FAIL: output or .partial left after refusal"; exit 1; }
 
 cp "$TMP/tone.flac" "$TMP/nomd5.flac"
@@ -389,13 +395,32 @@ set +e; FLACTOAIFF_TEST_DAMAGE=format "$BIN" --convert "$TMP/tone.flac" "$TMP/v4
 [ ! -e "$TMP/v4/tone.aiff" ] && ! ls -A "$TMP/v4" 2>/dev/null | grep -q "\.partial$" || { echo "FAIL: output or .partial left after format refusal"; exit 1; }
 
 echo "30. Verification: tags read back through AVFoundation…"
-tag_flac "$TMP/tone.flac" "$TMP/full.flac" 'GENRE=(13)' BPM=128 INITIALKEY=Am 'COMMENT=Nice track 蒸發' CATALOG=XYZ1 PICTURE=1
+tag_flac "$TMP/tone.flac" "$TMP/full.flac" 'GENRE=(13)' BPM=128 INITIALKEY=Am 'COMMENT=Nice track 蒸發' CATALOG=XYZ1 \
+    DATE=2026-03-01 TRACKNUMBER=3 TRACKTOTAL=12 DISCNUMBER=1 DISCTOTAL=2 ALBUMARTIST='Various Artists' \
+    'TITLE=Song\0' 'ARTIST=A\0B' 'MOOD=x\0' PICTURE=2
 [ "$("$BIN" --convert "$TMP/full.flac" "$TMP/t1")" = "OK $TMP/t1/full.aiff${TAB}verified" ] || { echo "FAIL: fully tagged FLAC not verified"; exit 1; }
 tag_flac "$TMP/hr96.flac" "$TMP/fullhr.flac" BPM=128 PICTURE=1
 [ "$("$BIN" --convert --format max48 "$TMP/fullhr.flac" "$TMP/t2")" = "OK $TMP/t2/fullhr.aiff${TAB}tags verified" ] || { echo "FAIL: resampled tagged FLAC not 'tags verified'"; exit 1; }
 set +e; FLACTOAIFF_TEST_DAMAGE=tags "$BIN" --convert "$TMP/full.flac" "$TMP/t3" >/dev/null 2>"$TMP/v.err"; RC=$?; set -e
 [ "$RC" -eq 1 ] && grep -q "Tag check failed: artwork" "$TMP/v.err" || { echo "FAIL: tag damage not refused"; cat "$TMP/v.err"; exit 1; }
 [ ! -e "$TMP/t3/full.aiff" ] && ! ls -A "$TMP/t3" 2>/dev/null | grep -q "\.partial$" || { echo "FAIL: output or .partial left after tag refusal"; exit 1; }
+
+echo "31. Verification: memory stays flat on a long hi-res file…"
+python3 -I - "$TMP/long.aiff" <<'PY'
+import sys, os, struct
+data = os.urandom(3 << 20) * 70   # 210 MB of 24-bit stereo (35 min at 96 kHz)
+comm = b'COMM' + struct.pack('>IhIh', 18, 2, len(data) // 6, 24) + bytes([0x40, 0x0F, 0xBB, 0x80]) + bytes(6)
+ssnd = b'SSND' + struct.pack('>III', len(data) + 8, 0, 0)
+with open(sys.argv[1], 'wb') as f:
+    f.write(b'FORM' + struct.pack('>I', 4 + len(comm) + len(ssnd) + len(data)) + b'AIFF' + comm + ssnd)
+    f.write(data)
+PY
+afconvert -f flac -d flac "$TMP/long.aiff" "$TMP/long.flac" || { echo "FAIL: test setup: no long FLAC"; exit 1; }
+rm "$TMP/long.aiff"
+RSS="$(/usr/bin/time -l "$BIN" --convert "$TMP/long.flac" "$TMP/t4" 2>&1 >"$TMP/long.out" | awk '/maximum resident/ {print $1}')"
+rm -f "$TMP/long.flac"
+grep -q "${TAB}verified" "$TMP/long.out" || { echo "FAIL: long file not verified"; cat "$TMP/long.out"; exit 1; }
+[ "${RSS:-999999999}" -lt 100000000 ] || { echo "FAIL: verifying a 210 MB file peaked at $RSS bytes of memory"; exit 1; }
 
 echo
 echo "PASS: all checks."

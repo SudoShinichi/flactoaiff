@@ -103,7 +103,10 @@ enum TagIO {
         for _ in 0..<count {
             guard let len = r.u32le(), let bytes = r.bytes(Int(len)) else { return }
             guard let s = String(data: bytes, encoding: .utf8), let eq = s.firstIndex(of: "=") else { continue }
-            tags.comments.append((s[..<eq].uppercased(), String(s[s.index(after: eq)...])))
+            // A NUL can't survive in an ID3 text frame (readers stop at it), so "A\0B" becomes
+            // the repeated values A and B, like any other repeated key.
+            let key = s[..<eq].uppercased()
+            for part in s[s.index(after: eq)...].split(separator: "\0") { tags.comments.append((key, String(part))) }
         }
     }
 

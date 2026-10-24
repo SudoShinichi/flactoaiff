@@ -39,10 +39,11 @@ metadata and cover art intact.
   players. Files already within limits stay bit-identical.
 - **Tags and artwork carried over** — title, artist, album, cover art and more are written
   into the AIFF as an ID3 tag, so tracks show up correctly in your library.
-- **Every file verified** — lossless outputs are checked against the FLAC's own audio
-  fingerprint, and every output's format and length are checked, so a truncated or
-  still-downloading FLAC fails instead of becoming a short AIFF. Tags and artwork are read back
-  the way Apple Music reads them. On any mismatch nothing is saved and the row says why.
+- **Every file verified** — lossless conversions are checked bit-for-bit against the FLAC's own
+  audio fingerprint. Every output's format and length are checked (resampled and CD outputs get
+  these but not the bit-for-bit check), so a truncated or still-downloading FLAC fails instead
+  of becoming a short AIFF. Tags and artwork are read back the way Apple Music reads them. On
+  any mismatch nothing is saved and the row says why.
 - **Skips duplicates** — files that were already converted are skipped, never overwritten.
   Output is written to a temp file and renamed into place only when complete, so a
   half-written AIFF can never be mistaken for a finished one.
@@ -128,7 +129,8 @@ appends an `ID3 ` chunk to the AIFF.
 
 The end-to-end test synthesizes real FLAC files and runs the actual conversion core. It
 covers bit-depth and sample-rate preservation, duplicate skipping, rejecting non-FLAC and corrupt
-input, concurrent conversions, tag carry-over, and the watch folder.
+input, concurrent conversions, tag carry-over, output verification (including tampered files
+being refused), and the watch folder.
 
 A headless mode is available for scripting:
 

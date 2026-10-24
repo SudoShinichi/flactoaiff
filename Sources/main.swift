@@ -54,7 +54,7 @@ if cliArgs.count >= 2 && (cliArgs[1] == "--convert" || cliArgs[1] == "--watch") 
         let watcher = FolderWatcher(root: watchRoot) { files, _ in
             converter.async {
                 for item in Jobs.watched(files, root: watchRoot, into: outputRoot) {
-                    _ = cliPrint(Jobs.run(item, outputRoot: outputRoot, options: options))
+                    _ = autoreleasepool { cliPrint(Jobs.run(item, outputRoot: outputRoot, options: options)) }
                 }
             }
         }
@@ -68,7 +68,7 @@ if cliArgs.count >= 2 && (cliArgs[1] == "--convert" || cliArgs[1] == "--watch") 
 
     var failed = false
     for item in Jobs.expand(args.map { URL(fileURLWithPath: $0) }, into: outputRoot) {
-        if !cliPrint(Jobs.run(item, outputRoot: outputRoot, options: options)) { failed = true }
+        if !autoreleasepool(invoking: { cliPrint(Jobs.run(item, outputRoot: outputRoot, options: options)) }) { failed = true }
     }
     exit(failed ? 1 : 0)
 }

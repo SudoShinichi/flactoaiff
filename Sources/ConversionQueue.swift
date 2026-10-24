@@ -37,7 +37,7 @@ final class ConversionQueue: ObservableObject {
         isWorking = true
         worker.async {
             for item in makeItems(root) {
-                let row = Jobs.run(item, outputRoot: root, options: options)
+                let row = autoreleasepool { Jobs.run(item, outputRoot: root, options: options) }   // free each file's temporaries before the next
                 if quietSkips && row.kind == .alreadyConverted { continue }
                 DispatchQueue.main.async { self.rows.append(row) }
             }

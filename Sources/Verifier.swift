@@ -44,7 +44,7 @@ enum Verifier {
         var checks = Checks()
         if lossless, let source, let md5 = source.md5, source.bitsPerSample <= info.bitsPerSample {
             guard try audioMD5(aiff, info, sourceBits: source.bitsPerSample) == md5 else {
-                throw ConvertError.verificationFailed("Audio doesn't match the FLAC")
+                throw audioMismatch
             }
             checks.audio = true
         }
@@ -60,7 +60,9 @@ enum Verifier {
         // AVFoundation picks the container from the file extension and the temp file has none,
         // so read it through a symlink named .aiff.
         let link = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".aiff")
-        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: url)
+        do { try FileManager.default.createSymbolicLink(at: link, withDestinationURL: url) } catch {
+            throw ConvertError.verificationFailed("Tag check failed: couldn't read tags back")
+        }
         defer { try? FileManager.default.removeItem(at: link) }
         var items = AVURLAsset(url: link).metadata(forFormat: .id3Metadata)
         func take(_ matches: (AVMetadataItem) -> Bool) -> Bool {
@@ -94,36 +96,66 @@ enum Verifier {
         "TBPM": "BPM", "TKEY": "key", "TYER": "year", "TRCK": "track number", "TPOS": "disc number",
     ]
 
+    private static let audioMismatch = ConvertError.verificationFailed("Audio doesn't match the FLAC's checksum — the FLAC may be damaged")
+
     /// MD5 of the AIFF's samples in FLAC's own form: signed little-endian, ceil(bits/8) bytes
     /// each. A lossless up-conversion only appended zero bits, so shifting them off restores
-    /// the source samples.
+    /// the source samples (and any non-zero bit there means the audio isn't the FLAC's).
+    /// Streams through two reused buffers, so memory stays flat however long the file is —
+    /// keep it that way: the GUI converts a whole batch in one go.
     private static func audioMD5(_ url: URL, _ info: AIFFInfo, sourceBits: Int) throws -> Data {
-        let fh = try FileHandle(forReadingFrom: url)
-        defer { try? fh.close() }
-        try fh.seek(toOffset: info.soundDataOffset)
+        let mismatch = audioMismatch
+        let fd = open(url.path, O_RDONLY)
+        guard fd >= 0 else { throw CocoaError(.fileReadNoSuchFile) }
+        defer { close(fd) }
         let outBytes = info.bitsPerSample / 8, srcBytes = (sourceBits + 7) / 8
-        let chunk = outBytes * info.channels * (1 << 20 / (outBytes * info.channels))   // ≈1 MiB of whole frames
+        let frameBytes = outBytes * info.channels
+        let chunk = frameBytes * max(1, (1 << 20) / frameBytes)   // ≈1 MiB of whole frames
+        let input = UnsafeMutableRawPointer.allocate(byteCount: chunk, alignment: 16)
+        let output = UnsafeMutablePointer<UInt8>.allocate(capacity: chunk / outBytes * srcBytes)
+        defer { input.deallocate(); output.deallocate() }
+        let shift = UInt32(32 - sourceBits), lowMask = UInt32.max >> UInt32(sourceBits)
         var md5 = Insecure.MD5()
+        var offset = off_t(info.soundDataOffset)
         var remaining = Int(info.soundDataLength)
         while remaining > 0 {
-            guard let data = try fh.read(upToCount: min(chunk, remaining)), !data.isEmpty else {
-                throw ConvertError.verificationFailed("Audio doesn't match the FLAC")   // SSND shorter than it claims
+            let want = min(chunk, remaining)
+            var got = 0
+            while got < want {   // pread may return less than asked
+                let n = pread(fd, input + got, want - got, offset + off_t(got))
+                if n < 0 && errno == EINTR { continue }
+                guard n > 0 else { throw mismatch }   // SSND shorter than it claims
+                got += n
             }
-            remaining -= data.count
-            var out = [UInt8]()
-            out.reserveCapacity(data.count / outBytes * srcBytes)
-            var i = data.startIndex
-            while i + outBytes <= data.endIndex {
-                // Left-align the big-endian sample in 32 bits; its top `sourceBits` bits are the source value.
-                var u = UInt32(data[i]) << 24
-                if outBytes > 1 { u |= UInt32(data[i + 1]) << 16 }
-                if outBytes > 2 { u |= UInt32(data[i + 2]) << 8 }
-                if outBytes > 3 { u |= UInt32(data[i + 3]) }
-                let v = Int32(bitPattern: u) >> Int32(32 - sourceBits)
-                for k in 0..<srcBytes { out.append(UInt8(truncatingIfNeeded: v >> Int32(8 * k))) }
-                i += outBytes
+            offset += off_t(got)
+            remaining -= got
+            let samples = got / outBytes
+            let src = input.assumingMemoryBound(to: UInt8.self)
+            var o = 0
+            if sourceBits == info.bitsPerSample {   // no padding: just flip big-endian to little-endian
+                if outBytes == 3 {
+                    for i in 0..<samples { output[i * 3] = src[i * 3 + 2]; output[i * 3 + 1] = src[i * 3 + 1]; output[i * 3 + 2] = src[i * 3] }
+                } else if outBytes == 2 {
+                    for i in 0..<samples { output[i * 2] = src[i * 2 + 1]; output[i * 2 + 1] = src[i * 2] }
+                } else {
+                    for i in 0..<samples { for k in 0..<outBytes { output[i * outBytes + k] = src[i * outBytes + outBytes - 1 - k] } }
+                }
+                o = samples * outBytes
+            } else {
+                for i in 0..<samples {
+                    // Left-align the big-endian sample in 32 bits; its top `sourceBits` bits are the source value.
+                    let p = src + i * outBytes
+                    var u = UInt32(p[0]) << 24
+                    if outBytes > 1 { u |= UInt32(p[1]) << 16 }
+                    if outBytes > 2 { u |= UInt32(p[2]) << 8 }
+                    if outBytes > 3 { u |= UInt32(p[3]) }
+                    guard u & lowMask == 0 else { throw mismatch }   // the padding bits must be zero
+                    let v = Int32(bitPattern: u) >> Int32(shift)
+                    for k in 0..<srcBytes { output[o + k] = UInt8(truncatingIfNeeded: v >> Int32(8 * k)) }
+                    o += srcBytes
+                }
             }
-            md5.update(data: out)
+            md5.update(bufferPointer: UnsafeRawBufferPointer(start: output, count: o))
         }
         return Data(md5.finalize())
     }
