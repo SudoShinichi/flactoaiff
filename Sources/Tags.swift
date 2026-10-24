@@ -21,6 +21,25 @@ struct Tags {
     }
 }
 
+/// What a FLAC's STREAMINFO block declares.
+struct StreamInfo {
+    let samples: Int
+    let rate: Int
+    let channels: Int
+    let bitsPerSample: Int
+    let md5: Data?   // MD5 of the decoded samples; nil when the encoder left it all zero
+}
+
+/// What an AIFF's COMM and SSND chunks declare.
+struct AIFFInfo {
+    let channels: Int
+    let frames: Int
+    let bitsPerSample: Int
+    let rate: Double
+    let soundDataOffset: UInt64   // file offset of the first sample
+    let soundDataLength: UInt64   // bytes of sample data
+}
+
 /// FLAC tag reading and AIFF ID3 tag writing. afconvert copies audio only, so
 /// without this the AIFF has no tags and players fall back to the filename.
 enum TagIO {
@@ -54,9 +73,9 @@ enum TagIO {
         return tags
     }
 
-    /// Total sample count and sample rate from the FLAC's STREAMINFO block (always the
-    /// first). nil if unreadable; samples is 0 when the encoder didn't know the length.
-    static func flacStreamInfo(_ url: URL) -> (samples: Int, rate: Int)? {
+    /// STREAMINFO (always the first block) as the encoder declared it. nil if unreadable;
+    /// `samples` is 0 when the encoder didn't know the length, `md5` nil when it didn't store one.
+    static func flacStreamInfo(_ url: URL) -> StreamInfo? {
         guard let fh = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? fh.close() }
         let head = fh.readData(ofLength: 4 + 4 + 34)
@@ -64,7 +83,10 @@ enum TagIO {
         // Bytes 10–17 of STREAMINFO: 20-bit rate, 3-bit channels, 5-bit depth, 36-bit total samples.
         let packed = head[(8 + 10)..<(8 + 18)].reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
         let rate = Int(packed >> 44), samples = Int(packed & (1 << 36 - 1))
-        return rate > 0 ? (samples, rate) : nil
+        let channels = Int(packed >> 41 & 0x7) + 1, bits = Int(packed >> 36 & 0x1F) + 1
+        let md5 = Data(head[(8 + 18)..<(8 + 34)])   // bytes 18–33
+        return rate > 0 ? StreamInfo(samples: samples, rate: rate, channels: channels, bitsPerSample: bits,
+                                     md5: md5.contains { $0 != 0 } ? md5 : nil) : nil
     }
 
     private static func parseVorbisComments(_ d: Data, into tags: inout Tags) {
@@ -174,22 +196,38 @@ enum TagIO {
 
     // MARK: - AIFF reading
 
-    /// numSampleFrames from the AIFF's COMM chunk, or nil if it can't be read.
-    static func aiffFrameCount(_ url: URL) -> Int? {
+    /// The COMM format and where SSND's samples sit, or nil if the file can't be parsed.
+    static func aiffInfo(_ url: URL) -> AIFFInfo? {
         guard let fh = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? fh.close() }
         guard fh.readData(ofLength: 12).prefix(4) == Data("FORM".utf8) else { return nil }
+        func be(_ d: Data) -> UInt64 { d.reduce(0) { $0 << 8 | UInt64($1) } }
+        var comm: (channels: Int, frames: Int, bits: Int, rate: Double)?
+        var sound: (offset: UInt64, length: UInt64)?
         while true {
             let header = fh.readData(ofLength: 8)
-            guard header.count == 8 else { return nil }
-            let size = header[4..<8].reduce(0) { $0 << 8 | Int($1) }
+            guard header.count == 8 else { break }
+            let size = be(header[(header.startIndex + 4)...])
+            let start = fh.offsetInFile
             if header.prefix(4) == Data("COMM".utf8) {
-                let comm = fh.readData(ofLength: 6)
-                guard comm.count == 6 else { return nil }
-                return comm[(comm.startIndex + 2)..<(comm.startIndex + 6)].reduce(0) { $0 << 8 | Int($1) }
+                let d = fh.readData(ofLength: 18)
+                guard size >= 18, d.count == 18 else { return nil }
+                let i = d.startIndex
+                // 80-bit IEEE extended: sign + 15-bit exponent, then a 64-bit mantissa with an explicit leading 1.
+                let exp = Int(be(d[(i + 8)..<(i + 10)]) & 0x7FFF)
+                let mant = be(d[(i + 10)..<(i + 18)])
+                comm = (Int(be(d[i..<(i + 2)])), Int(be(d[(i + 2)..<(i + 6)])), Int(be(d[(i + 6)..<(i + 8)])),
+                        mant == 0 ? 0 : Double(mant) * pow(2, Double(exp - 16383 - 63)))
+            } else if header.prefix(4) == Data("SSND".utf8) {
+                let d = fh.readData(ofLength: 8)
+                guard size >= 8, d.count == 8 else { return nil }
+                sound = (start + 8 + be(d[(d.startIndex + 0)..<(d.startIndex + 4)]), size - 8)
             }
-            guard (try? fh.seek(toOffset: fh.offsetInFile + UInt64(size + size % 2))) != nil else { return nil }
+            guard (try? fh.seek(toOffset: start + size + size % 2)) != nil else { break }
         }
+        guard let c = comm, let s = sound else { return nil }
+        return AIFFInfo(channels: c.channels, frames: c.frames, bitsPerSample: c.bits, rate: c.rate,
+                        soundDataOffset: s.offset, soundDataLength: s.length)
     }
 
     // MARK: - AIFF writing

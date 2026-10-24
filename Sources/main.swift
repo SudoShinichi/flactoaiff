@@ -20,7 +20,7 @@ func cliUsage() -> Never {
 /// `OK`/`SKIP` to stdout, `ERROR` to stderr, flushed at once. Returns false for an ERROR.
 func cliPrint(_ row: Row) -> Bool {
     switch row.kind {
-    case .converted:        print("OK \(row.output!.path)")
+    case .converted:        print("OK \(row.output!.path)\t\(row.checks ?? "")")
     case .alreadyConverted: print("SKIP \(row.output!.path)")
     case .skipped, .failed:
         FileHandle.standardError.write("ERROR \(row.name): \(row.detail)\n".data(using: .utf8)!)

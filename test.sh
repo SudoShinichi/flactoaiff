@@ -325,5 +325,61 @@ sleep 3
 kill $WATCHER; wait $WATCHER 2>/dev/null || true
 [ ! -e "$TMP/watchout3/old.aiff" ] || { echo "FAIL: FLAC that was already there got converted"; exit 1; }
 
+# flac20 <out.flac>: a hand-written 20-bit mono FLAC (one VERBATIM frame, 4096 samples),
+# since afconvert can't encode 20-bit. afconvert decodes it, so the converter sees a real 20-bit source.
+flac20() {
+python3 -I - "$1" <<'PY'
+import sys, math, hashlib
+N = 4096
+def crc(data, poly, bits):
+    c, top, mask = 0, 1 << (bits - 1), (1 << bits) - 1
+    for b in data:
+        c ^= b << (bits - 8)
+        for _ in range(8):
+            c = ((c << 1) ^ poly) & mask if c & top else (c << 1) & mask
+    return c
+samples = [int(300000 * math.sin(i * 0.05)) for i in range(N)]
+md5 = hashlib.md5(b''.join(s.to_bytes(3, 'little', signed=True) for s in samples)).digest()
+packed = (44100 << 44) | (0 << 41) | (19 << 36) | N   # rate, channels-1, bps-1, total samples
+info = (N.to_bytes(2, 'big') * 2) + bytes(6) + packed.to_bytes(8, 'big') + md5
+header = bytes([0xFF, 0xF8, 0xC9, 0x0A, 0x00])   # sample-size code 0b101 = 20-bit
+header += bytes([crc(header, 0x07, 8)])
+body = bytes([0x02])   # subframe header: VERBATIM
+bits = ''.join(format(s & 0xFFFFF, '020b') for s in samples)
+body += int(bits, 2).to_bytes(len(bits) // 8, 'big')
+frame = header + body
+frame += crc(frame, 0x8005, 16).to_bytes(2, 'big')
+open(sys.argv[1], 'wb').write(b'fLaC' + bytes([0x80, 0, 0, 34]) + info + frame)
+PY
+}
+
+echo "29. Verification: lossless outputs are verified, tampered audio is refused…"
+TAB="$(printf '\t')"
+V1="$TMP/v1"
+[ "$("$BIN" --convert "$TMP/tone.flac" "$V1")" = "OK $V1/tone.aiff${TAB}verified" ] || { echo "FAIL: 24-bit mono not verified"; exit 1; }
+[ "$("$BIN" --convert "$TMP/t16.flac" "$V1")" = "OK $V1/t16.aiff${TAB}verified" ] || { echo "FAIL: 16-bit not verified"; exit 1; }
+afconvert -f flac -d flac -c 2 "$TMP/tone.aiff" "$TMP/st.flac" 2>/dev/null \
+    || { say -o "$TMP/st.aiff" --data-format=BEI24@44100 --channels=2 "stereo tone" && afconvert -f flac -d flac "$TMP/st.aiff" "$TMP/st.flac"; }
+afinfo "$TMP/st.flac" | grep -q "2 ch" || { echo "FAIL: test setup: no stereo FLAC"; exit 1; }
+[ "$("$BIN" --convert "$TMP/st.flac" "$V1")" = "OK $V1/st.aiff${TAB}verified" ] || { echo "FAIL: stereo not verified"; exit 1; }
+flac20 "$TMP/b20.flac"
+afinfo "$TMP/b20.flac" | grep -q "I20" || { echo "FAIL: test setup: hand-made FLAC is not 20-bit"; afinfo "$TMP/b20.flac"; exit 1; }
+[ "$("$BIN" --convert "$TMP/b20.flac" "$V1")" = "OK $V1/b20.aiff${TAB}verified" ] || { echo "FAIL: 20-bit not verified"; exit 1; }
+
+cp "$TMP/tone.flac" "$TMP/badmd5.flac"
+printf '\x5a' | dd of="$TMP/badmd5.flac" bs=1 seek=30 conv=notrunc 2>/dev/null
+set +e; "$BIN" --convert "$TMP/badmd5.flac" "$TMP/v2" >/dev/null 2>"$TMP/v.err"; RC=$?; set -e
+[ "$RC" -eq 1 ] && grep -q "Audio doesn't match the FLAC" "$TMP/v.err" || { echo "FAIL: tampered MD5 not refused"; cat "$TMP/v.err"; exit 1; }
+[ ! -e "$TMP/v2/badmd5.aiff" ] && ! ls -A "$TMP/v2" 2>/dev/null | grep -q "\.partial$" || { echo "FAIL: output or .partial left after refusal"; exit 1; }
+
+cp "$TMP/tone.flac" "$TMP/nomd5.flac"
+dd if=/dev/zero of="$TMP/nomd5.flac" bs=1 seek=26 count=16 conv=notrunc 2>/dev/null
+[ "$("$BIN" --convert "$TMP/nomd5.flac" "$V1")" = "OK $V1/nomd5.aiff${TAB}format checked" ] || { echo "FAIL: zero MD5 should be format checked"; exit 1; }
+[ "$("$BIN" --convert --format max48 "$TMP/hr96.flac" "$TMP/v3")" = "OK $TMP/v3/hr96.aiff${TAB}format checked" ] || { echo "FAIL: resampled should be format checked"; exit 1; }
+
+set +e; FLACTOAIFF_TEST_DAMAGE=format "$BIN" --convert "$TMP/tone.flac" "$TMP/v4" >/dev/null 2>"$TMP/v.err"; RC=$?; set -e
+[ "$RC" -eq 1 ] && grep -q "Output format is wrong" "$TMP/v.err" || { echo "FAIL: format damage not refused"; cat "$TMP/v.err"; exit 1; }
+[ ! -e "$TMP/v4/tone.aiff" ] && ! ls -A "$TMP/v4" 2>/dev/null | grep -q "\.partial$" || { echo "FAIL: output or .partial left after format refusal"; exit 1; }
+
 echo
 echo "PASS: all checks."
