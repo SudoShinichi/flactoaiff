@@ -97,7 +97,7 @@ appends an `ID3 ` chunk to the AIFF.
 | File | Purpose |
 | --- | --- |
 | `Sources/main.swift` | SwiftUI window (drop zone, settings bar, results), app delegate, and the headless `--convert` mode |
-| `Sources/Converter.swift` | Bit-depth detection, safe output naming, `afconvert` invocation |
+| `Sources/Converter.swift` | Format detection, output-format choice (resampling/dither), `afconvert` invocation, atomic saving |
 | `Sources/Tags.swift` | FLAC tag/picture parsing and ID3 chunk writing |
 | `Sources/Jobs.swift` | Expands dropped files/folders into conversions and runs them |
 | `Sources/Settings.swift` | Remembered output folder and output format |

@@ -118,7 +118,7 @@ struct DropView: View {
                 .padding()
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
+                    LazyVStack(alignment: .leading, spacing: 8) {
                         ForEach(queue.rows) { row in
                             HStack(alignment: .top, spacing: 8) {
                                 Image(systemName: row.kind.symbol)
@@ -257,6 +257,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// applicationDidFinishLaunching; the queue exists from init, so nothing is lost.
     func application(_ application: NSApplication, open urls: [URL]) {
         queue.enqueue(urls)
+        // Show the rows for a Dock drop onto a minimized window (window is nil on a cold launch).
+        if window?.isMiniaturized == true { window.deminiaturize(nil) }
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Quitting mid-batch leaves the remaining files unconverted, so ask first.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard queue.isWorking else { return .terminateNow }
+        let alert = NSAlert()
+        alert.messageText = "Quit while converting?"
+        alert.informativeText = "Files not yet converted will be skipped. You can drop them again later — finished AIFFs are kept."
+        alert.addButton(withTitle: "Keep Converting")
+        alert.addButton(withTitle: "Quit")
+        if alert.runModal() == .alertSecondButtonReturn { return .terminateNow }
+        window?.makeKeyAndOrderFront(nil)   // closing the window got us here: bring it back
+        return .terminateCancel
     }
 
     private func installMainMenu() {

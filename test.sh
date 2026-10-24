@@ -227,5 +227,16 @@ fmt "$SAME/CD1 2/01.aiff" | grep -q "16-bit" || { echo "FAIL: B/CD1 not in 'CD1 
 AGAIN="$("$BIN" --convert "$TMP/A/CD1" "$TMP/B/CD1" "$SAME" | grep -c '^SKIP')"
 [ "$AGAIN" -eq 2 ] || { echo "FAIL: re-dropping both should skip both, got $AGAIN SKIPs"; exit 1; }
 
+echo "22. Packages inside a dropped folder (e.g. an .app or a library bundle) are not entered…"
+PKG="$TMP/WithPackage"
+mkdir -p "$PKG/Plugin.bundle/Contents/Resources"
+cp "$TMP/tone.flac" "$PKG/Plugin.bundle/Contents/Resources/sample.flac"
+cp "$TMP/tone.flac" "$PKG/real.flac"
+ln -s "$TMP/t16.flac" "$PKG/linked.flac"   # symlinked FLACs still count
+"$BIN" --convert "$PKG" "$TMP/pkgout" >/dev/null
+ACTUAL="$(cd "$TMP/pkgout" && find . -mindepth 1 | sed 's|^\./||' | LC_ALL=C sort)"
+EXPECTED="$(printf '%s\n' "WithPackage" "WithPackage/linked.aiff" "WithPackage/real.aiff")"
+[ "$ACTUAL" = "$EXPECTED" ] || { echo "FAIL: wrong output tree (package entered or symlink skipped)"; diff <(echo "$EXPECTED") <(echo "$ACTUAL"); exit 1; }
+
 echo
 echo "PASS: all checks."

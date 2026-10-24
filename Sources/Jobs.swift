@@ -47,14 +47,15 @@ enum Jobs {
             }
 
             let folderOut = outputRoot.appendingPathComponent(folderNames.name(for: url), isDirectory: true)
-            let flacs = (fm.subpaths(atPath: url.path) ?? [])
-                .filter { rel in
-                    var relIsDir: ObjCBool = false
-                    return rel.lowercased().hasSuffix(".flac")
-                        && !rel.split(separator: "/").contains { $0.hasPrefix(".") }
-                        && fm.fileExists(atPath: url.appendingPathComponent(rel).path, isDirectory: &relIsDir)
-                        && !relIsDir.boolValue
+            let walker = fm.enumerator(at: url, includingPropertiesForKeys: [.isRegularFileKey],
+                                       options: [.skipsHiddenFiles, .skipsPackageDescendants])
+            let rootDepth = url.standardizedFileURL.pathComponents.count
+            let flacs = (walker?.allObjects as? [URL] ?? [])
+                .filter { file in
+                    file.pathExtension.lowercased() == "flac"
+                        && (try? file.resolvingSymlinksInPath().resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
                 }
+                .map { $0.standardizedFileURL.pathComponents.dropFirst(rootDepth).joined(separator: "/") }
                 .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
             if flacs.isEmpty {
                 items.append(.note(name: url.lastPathComponent, message: "No .flac files found"))

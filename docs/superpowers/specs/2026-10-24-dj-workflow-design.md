@@ -78,7 +78,7 @@ A setting with three modes. `Original` is the default.
 - **Row note:** the outcome lists what was reduced, e.g. `→ track.aiff (96 → 44.1 kHz, 24 → 16-bit)`.
 
 ### Folder expansion
-- Recursive enumeration that skips hidden files and packages. Names starting with `.` exclude `._*` AppleDouble files.
+- Recursive enumeration that skips hidden files and packages (bundles such as `.app`). Symlinked FLACs are followed. Names starting with `.` exclude `._*` AppleDouble files.
 - Only `.flac` (case-insensitive) files become jobs; other files inside folders are ignored silently.
 - Job `destDir` = `outputFolder/<droppedFolderName>/<relative subpath>`. Directories are created only when a job starts converting; a skipped job never creates them. If the job fails, any directories it created are removed again if they are empty, so no empty folders are left behind.
 - Different folders in one drop that share a name (`A/CD1`, `B/CD1`) don't merge: the second goes to `<droppedFolderName> 2`, then ` 3`, …, like Finder (case-insensitive). Dropping the same set again maps the same way, so it skips what was converted.
@@ -118,8 +118,8 @@ FlacToAiff --convert [--format original|max48|cd] <file-or-folder>... <outputDir
 ```
 - Prints one line per job: `OK <path>`, `SKIP <path>` (already converted), or `ERROR <name>: <message>` to stderr.
 - Exit codes:
-  - `0` — all jobs converted or skipped
-  - `1` — any job failed
+  - `0` — every input was converted or already converted (`SKIP`)
+  - `1` — anything else printed an `ERROR` line: a failed conversion, a non-FLAC file, or a folder without FLACs
   - `2` — usage error (no inputs or missing outputDir)
 
 ## Testing (`test.sh`)
