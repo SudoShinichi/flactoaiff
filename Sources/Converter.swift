@@ -79,6 +79,16 @@ enum Converter {
             try? FileManager.default.removeItem(at: output)   // don't leave a corpse that steals "song.aiff"
             throw ConvertError.afconvertFailed(err.isEmpty ? "afconvert exited with code \(code)" : err.trimmingCharacters(in: .whitespacesAndNewlines))
         }
+
+        // afconvert drops all tags; carry title/artist/album/cover etc. over as an ID3 chunk.
+        if let tag = TagIO.id3v23(TagIO.readFlacTags(flacURL)) {
+            do {
+                try TagIO.appendID3Chunk(tag, to: output)
+            } catch {
+                try? FileManager.default.removeItem(at: output)
+                throw error
+            }
+        }
         return output
     }
 

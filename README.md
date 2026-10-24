@@ -5,6 +5,7 @@ A minimal native macOS app that converts `.flac` audio files to `.aiff` by drag-
 - **No dependencies** — uses macOS's built-in `afconvert` engine (no ffmpeg, no Homebrew).
 - **Drag one or many** `.flac` files onto the window.
 - **Quality preserved** — sample rate is kept; bit depth (16-, 24- or 32-bit) is matched, rounding up on any detection uncertainty, never down.
+- **Tags kept** — title, artist, album, genre, BPM, key, label, year, track/disc numbers and cover art are copied from the FLAC into the AIFF (as an ID3 chunk, which Music, rekordbox, Serato etc. read).
 - **Never overwrites** — name clashes auto-rename: `song.aiff` → `song 2.aiff`.
 
 ## Build

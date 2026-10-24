@@ -70,5 +70,40 @@ set -e
 [ "$RC" -eq 2 ] || { echo "FAIL: expected exit 2, got $RC"; exit 1; }
 grep -q "usage:" "$TMP/usage.txt" || { echo "FAIL: no usage message"; exit 1; }
 
+echo "11. FLAC tags (incl. non-ASCII) are carried into the AIFF's ID3 chunk…"
+python3 -I - "$TMP/tone.flac" "$TMP/tagged.flac" <<'PY'
+import sys, struct
+src, dst = sys.argv[1:3]
+d = open(src, 'rb').read()
+# Find the end of the metadata blocks, clearing the "last block" flag as we go.
+i, out = 4, bytearray(b'fLaC')
+while True:
+    h, n = d[i], int.from_bytes(d[i+1:i+4], 'big')
+    out += bytes([h & 0x7F]) + d[i+1:i+4+n]
+    i += 4 + n
+    if h & 0x80: break
+vals = [b'TITLE=Song Title', b'ARTIST=Some Artist', 'ALBUM=Album \u84b8\u767c'.encode()]
+body = struct.pack('<I', 0) + struct.pack('<I', len(vals)) + b''.join(struct.pack('<I', len(v)) + v for v in vals)
+out += bytes([0x84]) + len(body).to_bytes(3, 'big') + body + d[i:]
+open(dst, 'wb').write(out)
+PY
+"$BIN" --convert "$TMP/tagged.flac" "$DEST"
+python3 -I - "$DEST/tagged.aiff" <<'PY' || { echo "FAIL: tags not carried over"; exit 1; }
+import sys, struct
+f = open(sys.argv[1], 'rb'); form = f.read(12); tag = None
+while (h := f.read(8)) and len(h) == 8:
+    cid, sz = h[:4], struct.unpack('>I', h[4:])[0]
+    if cid == b'ID3 ': tag = f.read(sz); break
+    f.seek(sz + (sz & 1), 1)
+assert tag and tag[:3] == b'ID3', 'no ID3 chunk'
+assert struct.unpack('>I', form[4:8])[0] + 8 == f.seek(0, 2), 'FORM size wrong'
+frames, j = {}, 10
+while j < len(tag) and tag[j] != 0:
+    fid, n = tag[j:j+4].decode(), struct.unpack('>I', tag[j+4:j+8])[0]
+    frames[fid] = tag[j+10:j+10+n][1:].decode('utf-16'); j += 10 + n
+want = {'TIT2': 'Song Title', 'TPE1': 'Some Artist', 'TALB': 'Album \u84b8\u767c'}
+assert all(frames.get(k) == v for k, v in want.items()), frames
+PY
+
 echo
-echo "PASS: conversion, 24/16-bit preservation, sample-rate preservation, auto-rename, rejection, filename-safe detection, corrupt-input handling, concurrent no-overwrite, and CLI arity all work."
+echo "PASS: conversion, 24/16-bit preservation, sample-rate preservation, auto-rename, rejection, filename-safe detection, corrupt-input handling, concurrent no-overwrite, CLI arity, and tag carry-over all work."
