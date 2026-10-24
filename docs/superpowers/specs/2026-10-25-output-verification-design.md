@@ -65,7 +65,7 @@ afconvert → length check → append ID3 → **verify** → publish. Verificati
 - **Window, verified non-lossless:** `→ track.aiff (96 → 48 kHz) · tags verified` (format and length were also checked; the wording avoids claiming bit-identical audio). If the audio check was skipped for a missing MD5: `· tags verified`.
 - **Untagged FLAC** (no tags written): the suffix names only what was checked. That is `· verified` for lossless audio, and `· format checked` otherwise. *(Implementer's call.)*
 - **Failure:** a red row with the reason. Watched files retry only when the FLAC changes, as today.
-- **CLI:** `OK`/`ERROR` lines are unchanged in shape. Failures print `ERROR <name>: <reason>` and exit 1.
+- **CLI:** `OK <path>\t<label>` carries the label (`verified`, `tags verified` or `format checked`); `ERROR` lines are unchanged. Failures print `ERROR <name>: <reason>` and exit 1.
 
 ## Constraints
 - macOS 12 deployment target. No third-party dependencies.

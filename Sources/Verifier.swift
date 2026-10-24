@@ -1,3 +1,4 @@
+import AVFoundation
 import CryptoKit
 import Foundation
 
@@ -11,10 +12,11 @@ struct Checks {
 
 /// Checks a finished AIFF before it is published. A failure throws, so the caller discards it.
 enum Verifier {
-    static func verify(aiff: URL, source: StreamInfo?, expected: Converter.OutputFormat, lossless: Bool) throws -> Checks {
-        if ProcessInfo.processInfo.environment["FLACTOAIFF_TEST_DAMAGE"] == "format" {   // TEST HOOK — only test.sh sets this
-            damageSampleSize(aiff)
-        }
+    static func verify(aiff: URL, source: StreamInfo?, expected: Converter.OutputFormat, lossless: Bool,
+                       writtenFrames: [ID3Frame]) throws -> Checks {
+        let damage = ProcessInfo.processInfo.environment["FLACTOAIFF_TEST_DAMAGE"]   // TEST HOOK — only test.sh sets this
+        if damage == "format" { damageSampleSize(aiff) }
+        if damage == "tags" { dropPictures(aiff, writtenFrames) }
         guard let info = TagIO.aiffInfo(aiff) else {
             throw ConvertError.verificationFailed("Output format is wrong (the AIFF can't be read back)")
         }
@@ -46,8 +48,51 @@ enum Verifier {
             }
             checks.audio = true
         }
+        if !writtenFrames.isEmpty {
+            try verifyTags(aiff, writtenFrames)
+            checks.tags = true
+        }
         return checks
     }
+
+    /// Read the ID3 tag back the way Apple Music does (AVFoundation) and compare every written frame.
+    private static func verifyTags(_ url: URL, _ frames: [ID3Frame]) throws {
+        // AVFoundation picks the container from the file extension and the temp file has none,
+        // so read it through a symlink named .aiff.
+        let link = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".aiff")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: url)
+        defer { try? FileManager.default.removeItem(at: link) }
+        var items = AVURLAsset(url: link).metadata(forFormat: .id3Metadata)
+        func take(_ matches: (AVMetadataItem) -> Bool) -> Bool {
+            guard let i = items.firstIndex(where: matches) else { return false }
+            items.remove(at: i)   // each frame needs its own item
+            return true
+        }
+        for frame in frames {
+            let field: String, found: Bool
+            switch frame {
+            case .text(let id, let value):
+                field = fieldNames[id] ?? id
+                found = take { $0.key as? String == id && $0.stringValue == value }
+            case .userText(let description, let value):
+                field = description
+                found = take { $0.key as? String == "TXXX" && $0.extraAttributes?[.info] as? String == description
+                    && $0.stringValue == value }
+            case .comment(let value):
+                field = "comment"
+                found = take { $0.key as? String == "COMM" && $0.stringValue == value }
+            case .picture(let pic):
+                field = "artwork"
+                found = take { $0.key as? String == "APIC" && $0.dataValue == pic.data }
+            }
+            guard found else { throw ConvertError.verificationFailed("Tag check failed: \(field)") }
+        }
+    }
+
+    private static let fieldNames = [
+        "TIT2": "title", "TPE1": "artist", "TALB": "album", "TPE2": "album artist", "TCON": "genre",
+        "TBPM": "BPM", "TKEY": "key", "TYER": "year", "TRCK": "track number", "TPOS": "disc number",
+    ]
 
     /// MD5 of the AIFF's samples in FLAC's own form: signed little-endian, ceil(bits/8) bytes
     /// each. A lossless up-conversion only appended zero bits, so shifting them off restores
@@ -91,5 +136,28 @@ enum Verifier {
               (try? fh.seek(toOffset: 26)) != nil, let old = fh.readData(ofLength: 2).last else { return }
         _ = try? fh.seek(toOffset: 26)
         try? fh.write(contentsOf: Data([0, old == 8 ? 16 : 8]))
+    }
+
+    /// Test hook: cut the ID3 chunk (always last) and write it again without its pictures.
+    private static func dropPictures(_ url: URL, _ frames: [ID3Frame]) {
+        guard let fh = try? FileHandle(forUpdating: url) else { return }
+        var start: UInt64?
+        var pos: UInt64 = 12
+        while (try? fh.seek(toOffset: pos)) != nil {
+            let h = fh.readData(ofLength: 8)
+            guard h.count == 8 else { break }
+            if h.prefix(4) == Data("ID3 ".utf8) { start = pos; break }
+            let size = h[4..<8].reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
+            pos += 8 + size + size % 2
+        }
+        guard let start else { try? fh.close(); return }
+        try? fh.truncate(atOffset: start)
+        _ = try? fh.seek(toOffset: 4)
+        try? fh.write(contentsOf: Data([UInt8(truncatingIfNeeded: (start - 8) >> 24), UInt8(truncatingIfNeeded: (start - 8) >> 16),
+                                        UInt8(truncatingIfNeeded: (start - 8) >> 8), UInt8(truncatingIfNeeded: start - 8)]))
+        try? fh.close()
+        if let tag = TagIO.id3v23(frames.filter { if case .picture = $0 { return false } else { return true } }) {
+            try? TagIO.appendID3Chunk(tag, to: url)
+        }
     }
 }

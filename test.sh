@@ -76,11 +76,12 @@ set -e
 [ "$RC" -eq 2 ] || { echo "FAIL: expected exit 2, got $RC"; exit 1; }
 grep -q "usage:" "$TMP/usage.txt" || { echo "FAIL: no usage message"; exit 1; }
 
-# tag_flac <src.flac> <dst.flac>: copy src, adding TITLE/ARTIST/ALBUM (non-ASCII) Vorbis comments.
+# tag_flac <src.flac> <dst.flac> [KEY=VALUE…]: copy src, adding TITLE/ARTIST/ALBUM (non-ASCII) Vorbis
+# comments plus any extras. An extra PICTURE=1 adds a tiny front-cover PICTURE block.
 tag_flac() {
-python3 -I - "$1" "$2" <<'PY'
+python3 -I - "$@" <<'PY'
 import sys, struct
-src, dst = sys.argv[1:3]
+src, dst, extra = sys.argv[1], sys.argv[2], sys.argv[3:]
 d = open(src, 'rb').read()
 i, out = 4, bytearray(b'fLaC')
 while True:   # copy metadata blocks, clearing the "last block" flag
@@ -88,9 +89,15 @@ while True:   # copy metadata blocks, clearing the "last block" flag
     out += bytes([h & 0x7F]) + d[i+1:i+4+n]
     i += 4 + n
     if h & 0x80: break
-vals = [b'TITLE=Song Title', b'ARTIST=Some Artist', 'ALBUM=Album 蒸發'.encode()]
+vals = [b'TITLE=Song Title', b'ARTIST=Some Artist', 'ALBUM=Album 蒸發'.encode()] + [e.encode() for e in extra if e != 'PICTURE=1']
 body = struct.pack('<I', 0) + struct.pack('<I', len(vals)) + b''.join(struct.pack('<I', len(v)) + v for v in vals)
-out += bytes([0x84]) + len(body).to_bytes(3, 'big') + body + d[i:]
+pics = 'PICTURE=1' in extra
+out += bytes([0x04 if pics else 0x84]) + len(body).to_bytes(3, 'big') + body
+if pics:   # front cover, 16 header-ish JPEG bytes: players only need the bytes back
+    jpg = bytes.fromhex('ffd8ffe000104a46494600010100000100010000ffd9')
+    pic = struct.pack('>I', 3) + struct.pack('>I', 10) + b'image/jpeg' + struct.pack('>I', 0) + struct.pack('>5I', 1, 1, 24, 0, len(jpg)) + jpg
+    out += bytes([0x86]) + len(pic).to_bytes(3, 'big') + pic
+out += d[i:]
 open(dst, 'wb').write(out)
 PY
 }
@@ -380,6 +387,15 @@ dd if=/dev/zero of="$TMP/nomd5.flac" bs=1 seek=26 count=16 conv=notrunc 2>/dev/n
 set +e; FLACTOAIFF_TEST_DAMAGE=format "$BIN" --convert "$TMP/tone.flac" "$TMP/v4" >/dev/null 2>"$TMP/v.err"; RC=$?; set -e
 [ "$RC" -eq 1 ] && grep -q "Output format is wrong" "$TMP/v.err" || { echo "FAIL: format damage not refused"; cat "$TMP/v.err"; exit 1; }
 [ ! -e "$TMP/v4/tone.aiff" ] && ! ls -A "$TMP/v4" 2>/dev/null | grep -q "\.partial$" || { echo "FAIL: output or .partial left after format refusal"; exit 1; }
+
+echo "30. Verification: tags read back through AVFoundation…"
+tag_flac "$TMP/tone.flac" "$TMP/full.flac" 'GENRE=(13)' BPM=128 INITIALKEY=Am 'COMMENT=Nice track 蒸發' CATALOG=XYZ1 PICTURE=1
+[ "$("$BIN" --convert "$TMP/full.flac" "$TMP/t1")" = "OK $TMP/t1/full.aiff${TAB}verified" ] || { echo "FAIL: fully tagged FLAC not verified"; exit 1; }
+tag_flac "$TMP/hr96.flac" "$TMP/fullhr.flac" BPM=128 PICTURE=1
+[ "$("$BIN" --convert --format max48 "$TMP/fullhr.flac" "$TMP/t2")" = "OK $TMP/t2/fullhr.aiff${TAB}tags verified" ] || { echo "FAIL: resampled tagged FLAC not 'tags verified'"; exit 1; }
+set +e; FLACTOAIFF_TEST_DAMAGE=tags "$BIN" --convert "$TMP/full.flac" "$TMP/t3" >/dev/null 2>"$TMP/v.err"; RC=$?; set -e
+[ "$RC" -eq 1 ] && grep -q "Tag check failed: artwork" "$TMP/v.err" || { echo "FAIL: tag damage not refused"; cat "$TMP/v.err"; exit 1; }
+[ ! -e "$TMP/t3/full.aiff" ] && ! ls -A "$TMP/t3" 2>/dev/null | grep -q "\.partial$" || { echo "FAIL: output or .partial left after tag refusal"; exit 1; }
 
 echo
 echo "PASS: all checks."

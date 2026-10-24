@@ -39,8 +39,10 @@ metadata and cover art intact.
   players. Files already within limits stay bit-identical.
 - **Tags and artwork carried over** — title, artist, album, cover art and more are written
   into the AIFF as an ID3 tag, so tracks show up correctly in your library.
-- **Never a cut-off track** — every AIFF's length is checked against the FLAC's own record of
-  its length, so a truncated or still-downloading FLAC fails instead of becoming a short AIFF.
+- **Every file verified** — lossless outputs are checked against the FLAC's own audio
+  fingerprint, and every output's format and length are checked, so a truncated or
+  still-downloading FLAC fails instead of becoming a short AIFF. Tags and artwork are read back
+  the way Apple Music reads them. On any mismatch nothing is saved and the row says why.
 - **Skips duplicates** — files that were already converted are skipped, never overwritten.
   Output is written to a temp file and renamed into place only when complete, so a
   half-written AIFF can never be mistaken for a finished one.
@@ -111,6 +113,7 @@ appends an `ID3 ` chunk to the AIFF.
 | `Sources/main.swift` | SwiftUI window (drop zone, settings bar, results), app delegate, and the headless `--convert` / `--watch` modes |
 | `Sources/Converter.swift` | Format detection, output-format choice (resampling/dither), `afconvert` invocation, atomic saving |
 | `Sources/Tags.swift` | FLAC tag/picture parsing and ID3 chunk writing |
+| `Sources/Verifier.swift` | Checks each AIFF before it is saved: audio fingerprint, format, tags |
 | `Sources/Jobs.swift` | Expands dropped files/folders into conversions and runs them |
 | `Sources/FolderWatcher.swift` | Watch folder: FSEvents, waits for files to finish being written |
 | `Sources/Settings.swift` | Remembered output folder, output format and watch folder |
@@ -133,6 +136,9 @@ A headless mode is available for scripting:
 build/FlacToAiff.app/Contents/MacOS/FlacToAiff --convert [--format original|max48|cd] <file-or-folder>... <output-dir>
 build/FlacToAiff.app/Contents/MacOS/FlacToAiff --watch [--format original|max48|cd] [--catch-up-since <unix-time>] <watch-dir> <output-dir>   # until Ctrl-C
 ```
+
+Each converted file prints `OK <path>`, a tab and what was verified (`verified`, `tags verified` or
+`format checked`); failures print `ERROR <name>: <reason>` and exit 1.
 
 ## Troubleshooting
 

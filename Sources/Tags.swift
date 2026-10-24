@@ -1,7 +1,7 @@
 import Foundation
 
 /// A cover picture taken from a FLAC PICTURE block.
-struct Picture {
+struct Picture: Equatable {
     let type: UInt8      // ID3/FLAC picture type (3 = front cover)
     let mime: String
     let data: Data
@@ -19,6 +19,14 @@ struct Tags {
         let vals = comments.filter { $0.key == key }.map(\.value).filter { !$0.isEmpty }
         return vals.isEmpty ? nil : vals.joined(separator: ", ")
     }
+}
+
+/// One ID3v2.3 frame as written, kept so the output can be checked against it.
+enum ID3Frame: Equatable {
+    case text(id: String, value: String)
+    case userText(description: String, value: String)   // TXXX
+    case comment(String)                                // COMM
+    case picture(Picture)                               // APIC
 }
 
 /// What a FLAC's STREAMINFO block declares.
@@ -130,16 +138,15 @@ enum TagIO {
         "WAVEFORMATEXTENSIBLE_CHANNEL_MASK",   // afconvert's own bookkeeping, not a tag
     ])
 
-    /// Build a complete ID3v2.3 tag (header + frames), or nil if there is nothing to write.
-    static func id3v23(_ tags: Tags) -> Data? {
-        guard !tags.isEmpty else { return nil }
-        var frames = Data()
+    /// The ID3v2.3 frames to write for `tags`, in file order.
+    static func id3Frames(_ tags: Tags) -> [ID3Frame] {
+        var frames = [ID3Frame]()
         var written = Set<String>()
 
         func text(_ id: String, _ value: String?) {
             guard let value, !value.isEmpty, !written.contains(id) else { return }
             written.insert(id)
-            frames += frame(id, [0x01] + utf16(value))
+            frames.append(.text(id: id, value: value))
         }
 
         for (key, id) in textFrames { text(id, tags.value(key)) }
@@ -152,20 +159,37 @@ enum TagIO {
         text("TPOS", numberWithTotal(tags.value("DISCNUMBER"),
                                      tags.value("DISCTOTAL") ?? tags.value("TOTALDISCS")))
         if let comment = tags.value("COMMENT") ?? tags.value("DESCRIPTION") {
-            frames += frame("COMM", [0x01] + Data("eng".utf8) + utf16("") + [0, 0] + utf16(comment))
+            frames.append(.comment(comment))
         }
         for (key, _) in tags.comments where !handledKeys.contains(key) {
             guard let value = tags.value(key), !written.contains("TXXX:" + key) else { continue }
             written.insert("TXXX:" + key)
-            frames += frame("TXXX", [0x01] + utf16(key) + [0, 0] + utf16(value))
+            frames.append(.userText(description: key, value: value))
         }
-        for pic in tags.pictures {
-            // Latin-1 encoding, empty description: maximally compatible.
-            frames += frame("APIC", [0x00] + Data(pic.mime.utf8) + [0x00, pic.type, 0x00] + pic.data)
-        }
+        frames += tags.pictures.map { .picture($0) }
+        return frames
+    }
 
-        guard !frames.isEmpty else { return nil }
-        return Data("ID3".utf8) + [3, 0, 0] + syncsafe(frames.count) + frames
+    /// Build a complete ID3v2.3 tag (header + frames), or nil if there is nothing to write.
+    static func id3v23(_ tags: Tags) -> Data? { id3v23(id3Frames(tags)) }
+
+    static func id3v23(_ frames: [ID3Frame]) -> Data? {
+        var body = Data()
+        for f in frames {
+            switch f {
+            case .text(let id, let value):
+                body += frame(id, [0x01] + utf16(value))
+            case .comment(let comment):
+                body += frame("COMM", [0x01] + Data("eng".utf8) + utf16("") + [0, 0] + utf16(comment))
+            case .userText(let description, let value):
+                body += frame("TXXX", [0x01] + utf16(description) + [0, 0] + utf16(value))
+            case .picture(let pic):
+                // Latin-1 encoding, empty description: maximally compatible.
+                body += frame("APIC", [0x00] + Data(pic.mime.utf8) + [0x00, pic.type, 0x00] + pic.data)
+            }
+        }
+        guard !body.isEmpty else { return nil }
+        return Data("ID3".utf8) + [3, 0, 0] + syncsafe(body.count) + body
     }
 
     /// "3" + "12" → "3/12"; leaves an existing "3/12" alone.

@@ -145,13 +145,15 @@ enum Converter {
                 }
 
                 // afconvert drops all tags; carry title/artist/album/cover etc. over as an ID3 chunk.
-                if let tag = TagIO.id3v23(TagIO.readFlacTags(flacURL)) {
+                let frames = TagIO.id3Frames(TagIO.readFlacTags(flacURL))
+                if let tag = TagIO.id3v23(frames) {
                     try TagIO.appendID3Chunk(tag, to: tmp)
                 }
 
                 let lossless = format.rate == nil && !format.dither
                     && (streamInfo?.bitsPerSample ?? Int.max) <= format.depth
-                let checks = try Verifier.verify(aiff: tmp, source: streamInfo, expected: format, lossless: lossless)
+                let checks = try Verifier.verify(aiff: tmp, source: streamInfo, expected: format, lossless: lossless,
+                                                writtenFrames: frames)
 
                 guard try publish(tmp, as: final) else {
                     try? FileManager.default.removeItem(at: tmp)
