@@ -142,6 +142,16 @@ enum Converter {
                     throw ConvertError.afconvertFailed(err.isEmpty ? "afconvert exited with code \(code)" : err.trimmingCharacters(in: .whitespacesAndNewlines))
                 }
 
+                // afconvert happily converts a truncated FLAC (a download or copy still being
+                // written), so check the length against STREAMINFO. Resampled lengths are within ±1.
+                if let info = TagIO.flacStreamInfo(flacURL), info.samples > 0, let got = TagIO.aiffFrameCount(tmp) {
+                    let expected = Double(info.samples) * Double(format.rate ?? info.rate) / Double(info.rate)
+                    guard abs(Double(got) - expected) <= 2 else {
+                        throw ConvertError.afconvertFailed(
+                            "FLAC is incomplete — only \(Int(Double(got) / expected * 100))% of the audio is there")
+                    }
+                }
+
                 // afconvert drops all tags; carry title/artist/album/cover etc. over as an ID3 chunk.
                 if let tag = TagIO.id3v23(TagIO.readFlacTags(flacURL)) {
                     try TagIO.appendID3Chunk(tag, to: tmp)

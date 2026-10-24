@@ -54,6 +54,19 @@ enum TagIO {
         return tags
     }
 
+    /// Total sample count and sample rate from the FLAC's STREAMINFO block (always the
+    /// first). nil if unreadable; samples is 0 when the encoder didn't know the length.
+    static func flacStreamInfo(_ url: URL) -> (samples: Int, rate: Int)? {
+        guard let fh = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? fh.close() }
+        let head = fh.readData(ofLength: 4 + 4 + 34)
+        guard head.count == 42, head.prefix(4) == Data("fLaC".utf8), head[4] & 0x7F == 0 else { return nil }
+        // Bytes 10–17 of STREAMINFO: 20-bit rate, 3-bit channels, 5-bit depth, 36-bit total samples.
+        let packed = head[(8 + 10)..<(8 + 18)].reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
+        let rate = Int(packed >> 44), samples = Int(packed & (1 << 36 - 1))
+        return rate > 0 ? (samples, rate) : nil
+    }
+
     private static func parseVorbisComments(_ d: Data, into tags: inout Tags) {
         var r = Reader(d)
         guard let vendorLen = r.u32le(), r.skip(Int(vendorLen)), let count = r.u32le() else { return }
@@ -157,6 +170,26 @@ enum TagIO {
 
     private static func syncsafe(_ n: Int) -> Data {
         Data([UInt8(n >> 21 & 0x7F), UInt8(n >> 14 & 0x7F), UInt8(n >> 7 & 0x7F), UInt8(n & 0x7F)])
+    }
+
+    // MARK: - AIFF reading
+
+    /// numSampleFrames from the AIFF's COMM chunk, or nil if it can't be read.
+    static func aiffFrameCount(_ url: URL) -> Int? {
+        guard let fh = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? fh.close() }
+        guard fh.readData(ofLength: 12).prefix(4) == Data("FORM".utf8) else { return nil }
+        while true {
+            let header = fh.readData(ofLength: 8)
+            guard header.count == 8 else { return nil }
+            let size = header[4..<8].reduce(0) { $0 << 8 | Int($1) }
+            if header.prefix(4) == Data("COMM".utf8) {
+                let comm = fh.readData(ofLength: 6)
+                guard comm.count == 6 else { return nil }
+                return comm[(comm.startIndex + 2)..<(comm.startIndex + 6)].reduce(0) { $0 << 8 | Int($1) }
+            }
+            guard (try? fh.seek(toOffset: fh.offsetInFile + UInt64(size + size % 2))) != nil else { return nil }
+        }
     }
 
     // MARK: - AIFF writing

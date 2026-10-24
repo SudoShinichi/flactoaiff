@@ -238,5 +238,92 @@ ACTUAL="$(cd "$TMP/pkgout" && find . -mindepth 1 | sed 's|^\./||' | LC_ALL=C sor
 EXPECTED="$(printf '%s\n' "WithPackage" "WithPackage/linked.aiff" "WithPackage/real.aiff")"
 [ "$ACTUAL" = "$EXPECTED" ] || { echo "FAIL: wrong output tree (package entered or symlink skipped)"; diff <(echo "$EXPECTED") <(echo "$ACTUAL"); exit 1; }
 
+# wait_for <path> [seconds]: succeeds once <path> exists, fails after the timeout (default 20 s).
+wait_for() {
+    local i
+    for ((i = 0; i < ${2:-20} * 4; i++)); do [ -e "$1" ] && return 0; sleep 0.25; done
+    return 1
+}
+# wait_log <file> <pattern> [seconds]: succeeds once a line in <file> matches <pattern>.
+wait_log() {
+    local i
+    for ((i = 0; i < ${3:-20} * 4; i++)); do grep -q "$2" "$1" 2>/dev/null && return 0; sleep 0.25; done
+    return 1
+}
+frames() { afinfo "$1" | sed -n 's/^audio packets: //p'; }   # PCM: 1 packet = 1 frame
+
+echo "23. Watch folder: a FLAC copied in converts; hidden and non-FLAC files are ignored…"
+WATCH="$TMP/watch"; WOUT="$TMP/watchout"; mkdir -p "$WATCH" "$WOUT"
+"$BIN" --watch "$WATCH" "$WOUT" > "$TMP/watch.log" 2>&1 &
+WATCHER=$!
+trap 'kill $WATCHER 2>/dev/null; hdiutil detach -quiet -force "$EXFAT" 2>/dev/null; rm -rf "$TMP"' EXIT
+wait_log "$TMP/watch.log" '^WATCHING ' || { echo "FAIL: --watch never reported it was ready"; cat "$TMP/watch.log"; exit 1; }
+cp "$TMP/tone.flac" "$WATCH/new.flac"
+cp "$TMP/tone.flac" "$WATCH/.hidden.flac"
+echo x > "$WATCH/notes.txt"
+wait_for "$WOUT/new.aiff" || { echo "FAIL: watched FLAC not converted"; cat "$TMP/watch.log"; exit 1; }
+fmt "$WOUT/new.aiff" | grep -q "24-bit" || { echo "FAIL: watched output not a valid AIFF"; exit 1; }
+
+echo "24. Watch folder: a FLAC still being written converts only once complete…"
+SIZE="$(stat -f %z "$TMP/tone.flac")"; HALF=$((SIZE / 2))
+head -c "$HALF" "$TMP/tone.flac" > "$WATCH/slow.flac"
+sleep 1   # well under the 2 s settle time (test 27 covers longer stalls)
+tail -c +$((HALF + 1)) "$TMP/tone.flac" >> "$WATCH/slow.flac"
+wait_for "$WOUT/slow.aiff" || { echo "FAIL: slowly written FLAC not converted"; cat "$TMP/watch.log"; exit 1; }
+[ "$(frames "$WOUT/slow.aiff")" = "$(frames "$WOUT/new.aiff")" ] \
+    || { echo "FAIL: converted before the file was complete"; cat "$TMP/watch.log"; exit 1; }
+
+echo "25. Watch folder: a folder moved in keeps its structure…"
+mkdir -p "$TMP/incoming/Some Album/CD2"
+cp "$TMP/t16.flac" "$TMP/incoming/Some Album/CD2/02 Track.flac"
+mv "$TMP/incoming/Some Album" "$WATCH/"
+wait_for "$WOUT/Some Album/CD2/02 Track.aiff" || { echo "FAIL: moved-in folder not converted"; ls -R "$WOUT"; cat "$TMP/watch.log"; exit 1; }
+sleep 3   # give stray events time to (wrongly) produce more work
+kill $WATCHER; wait $WATCHER 2>/dev/null || true
+[ ! -e "$WOUT/.hidden.aiff" ] && [ ! -e "$WOUT/notes.aiff" ] || { echo "FAIL: hidden/non-FLAC file converted"; exit 1; }
+grep -q '^ERROR' "$TMP/watch.log" && { echo "FAIL: watcher reported errors"; cat "$TMP/watch.log"; exit 1; }
+[ "$(grep -c '^OK' "$TMP/watch.log")" -eq 3 ] || { echo "FAIL: expected exactly 3 OK lines"; cat "$TMP/watch.log"; exit 1; }
+grep -q '^SKIP' "$TMP/watch.log" && { echo "FAIL: a watched file was handed off twice"; cat "$TMP/watch.log"; exit 1; }
+
+echo "26. A truncated FLAC fails as incomplete instead of becoming a short AIFF…"
+SIZE="$(stat -f %z "$TMP/tone.flac")"
+head -c $((SIZE / 2)) "$TMP/tone.flac" > "$TMP/truncated.flac"
+set +e; "$BIN" --convert "$TMP/truncated.flac" "$TMP/trunc" >/dev/null 2>"$TMP/trunc.err"; RC=$?; set -e
+[ "$RC" -eq 1 ] && grep -q "incomplete" "$TMP/trunc.err" || { echo "FAIL: truncated FLAC not reported as incomplete"; cat "$TMP/trunc.err"; exit 1; }
+[ ! -e "$TMP/trunc/truncated.aiff" ] || { echo "FAIL: short AIFF published for a truncated FLAC"; exit 1; }
+ls -A "$TMP/trunc" | grep -q "\.partial$" && { echo "FAIL: temp file left after incomplete FLAC"; exit 1; }
+
+echo "27. Watch folder: a writer that pauses, and a Firefox-style empty placeholder, end as full AIFFs…"
+WATCH2="$TMP/watch2"; WOUT2="$TMP/watchout2"; mkdir -p "$WATCH2"
+"$BIN" --watch "$WATCH2" "$WOUT2" > "$TMP/watch2.log" 2>&1 &
+WATCHER=$!
+wait_log "$TMP/watch2.log" '^WATCHING ' || { echo "FAIL: --watch never reported it was ready"; exit 1; }
+: > "$WATCH2/ff.flac"                                   # Firefox: empty placeholder first…
+head -c $((SIZE / 2)) "$TMP/tone.flac" > "$WATCH2/stall.flac"
+sleep 3.5                                               # …a writer stalled longer than the 2 s settle time
+cp "$TMP/tone.flac" "$WATCH2/.ff.flac.part" && mv "$WATCH2/.ff.flac.part" "$WATCH2/ff.flac"
+tail -c +$((SIZE / 2 + 1)) "$TMP/tone.flac" >> "$WATCH2/stall.flac"
+wait_log "$TMP/watch2.log" "^OK .*/stall.aiff" || { echo "FAIL: stalled FLAC never converted in full"; cat "$TMP/watch2.log"; exit 1; }
+wait_log "$TMP/watch2.log" "^OK .*/ff.aiff" || { echo "FAIL: Firefox-style download not converted"; cat "$TMP/watch2.log"; exit 1; }
+kill $WATCHER; wait $WATCHER 2>/dev/null || true
+[ "$(frames "$WOUT2/stall.aiff")" = "$(frames "$WOUT/new.aiff")" ] || { echo "FAIL: stalled FLAC gave a short AIFF"; exit 1; }
+grep -q "^ERROR ff.flac" "$TMP/watch2.log" && { echo "FAIL: empty placeholder reported as an error"; cat "$TMP/watch2.log"; exit 1; }
+
+echo "28. Watch catch-up: only FLACs (or folders) added after the given time convert…"
+W3="$TMP/watch3"; mkdir -p "$W3" "$TMP/incoming3/Late Album"
+cp "$TMP/tone.flac" "$W3/old.flac"                          # already there: must be left alone
+cp "$TMP/t16.flac" "$TMP/incoming3/Late Album/inside.flac"  # its own Date Added stays old
+sleep 2; SINCE="$(date +%s)"; sleep 1
+cp "$TMP/tone.flac" "$W3/new.flac"
+mv "$TMP/incoming3/Late Album" "$W3/"
+sleep 1   # these arrive before the watcher starts: only catch-up can find them
+"$BIN" --watch --catch-up-since "$SINCE" "$W3" "$TMP/watchout3" > "$TMP/watch3.log" 2>&1 &
+WATCHER=$!
+wait_log "$TMP/watch3.log" "^OK .*/new.aiff" || { echo "FAIL: FLAC added while 'quit' not caught up"; cat "$TMP/watch3.log"; exit 1; }
+wait_log "$TMP/watch3.log" "^OK .*/Late Album/inside.aiff" || { echo "FAIL: folder moved in while 'quit' not caught up"; cat "$TMP/watch3.log"; exit 1; }
+sleep 3
+kill $WATCHER; wait $WATCHER 2>/dev/null || true
+[ ! -e "$TMP/watchout3/old.aiff" ] || { echo "FAIL: FLAC that was already there got converted"; exit 1; }
+
 echo
 echo "PASS: all checks."
