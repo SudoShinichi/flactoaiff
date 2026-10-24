@@ -26,10 +26,11 @@ metadata and cover art intact.
   scanned recursively and keep their structure (`Album/CD1/…`), and cover images and other
   non-FLAC files are ignored.
 - **Watch folder** (optional) — choose a folder such as your downloads folder, and new FLACs
-  that land in it convert automatically while the app is open. Files are converted only once
-  they have finished downloading or unzipping. FLACs that arrived while the app was quit are
-  converted at the next launch; files that were already there when you started watching are
-  left alone.
+  that land in it convert automatically while the app is open. A file is converted once it has
+  stopped changing; if a copy stalls and the FLAC turns out incomplete, it is reported and
+  converted again once it is finished. FLACs added while the app was quit are converted at the
+  next launch. Files that were already there when you started watching are left alone, unless
+  you move or rename them inside the watch folder.
 - **Lossless** — sample rate is preserved and bit depth (16, 24 or 32-bit) is matched. If the
   source depth can't be detected, the app rounds *up*, never down.
 - **Compatibility formats** (optional) — pick *CDJ: max 24-bit / 48 kHz* for CDJ-2000NXS,
@@ -38,6 +39,8 @@ metadata and cover art intact.
   players. Files already within limits stay bit-identical.
 - **Tags and artwork carried over** — title, artist, album, cover art and more are written
   into the AIFF as an ID3 tag, so tracks show up correctly in your library.
+- **Never a cut-off track** — every AIFF's length is checked against the FLAC's own record of
+  its length, so a truncated or still-downloading FLAC fails instead of becoming a short AIFF.
 - **Skips duplicates** — files that were already converted are skipped, never overwritten.
   Output is written to a temp file and renamed into place only when complete, so a
   half-written AIFF can never be mistaken for a finished one.
@@ -128,7 +131,7 @@ A headless mode is available for scripting:
 
 ```bash
 build/FlacToAiff.app/Contents/MacOS/FlacToAiff --convert [--format original|max48|cd] <file-or-folder>... <output-dir>
-build/FlacToAiff.app/Contents/MacOS/FlacToAiff --watch [--format original|max48|cd] <watch-dir> <output-dir>   # until Ctrl-C
+build/FlacToAiff.app/Contents/MacOS/FlacToAiff --watch [--format original|max48|cd] [--catch-up-since <unix-time>] <watch-dir> <output-dir>   # until Ctrl-C
 ```
 
 ## Troubleshooting

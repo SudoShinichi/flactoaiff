@@ -6,7 +6,7 @@ final class Settings: ObservableObject {
         static let outputFolder = "outputFolder"
         static let mode = "outputMode"
         static let watchFolder = "watchFolder"
-        static let watchSince = "watchSince"
+        static let watchedUntil = "watchedUntil"
     }
     private let defaults: UserDefaults
 
@@ -18,16 +18,16 @@ final class Settings: ObservableObject {
     }
 
     /// Folder whose new FLACs convert automatically; nil = not watching.
-    /// Choosing one restarts `watchSince`, so its existing FLACs are left alone.
+    /// Choosing one sets `watchedUntil` to now, so its existing FLACs are left alone.
     @Published var watchFolder: URL? {
         didSet {
             defaults.set(watchFolder?.path, forKey: Key.watchFolder)
-            if watchFolder != nil { watchSince = Date() }
+            if watchFolder != nil { watchedUntil = Date() }
         }
     }
-    /// When watching started: FLACs added after this are caught up at launch.
-    private(set) var watchSince: Date {
-        didSet { defaults.set(watchSince, forKey: Key.watchSince) }
+    /// Arrivals up to here have been seen; the launch catch-up starts here.
+    var watchedUntil: Date {
+        didSet { defaults.set(watchedUntil, forKey: Key.watchedUntil) }
     }
 
     static var downloads: URL {
@@ -41,6 +41,6 @@ final class Settings: ObservableObject {
             .map { URL(fileURLWithPath: $0, isDirectory: true) } ?? Self.downloads
         mode = defaults.string(forKey: Key.mode).flatMap(OutputMode.init(rawValue:)) ?? .original
         watchFolder = defaults.string(forKey: Key.watchFolder).map { URL(fileURLWithPath: $0, isDirectory: true) }
-        watchSince = defaults.object(forKey: Key.watchSince) as? Date ?? Date()
+        watchedUntil = defaults.object(forKey: Key.watchedUntil) as? Date ?? Date()
     }
 }

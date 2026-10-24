@@ -5,13 +5,13 @@ import UniformTypeIdentifiers
 
 // MARK: - Headless CLI mode (used by test.sh)
 //   --convert [--format original|max48|cd] <file-or-folder>... <outputDir>
-//   --watch   [--format original|max48|cd] <watchDir> <outputDir>     (runs until killed)
+//   --watch   [--format original|max48|cd] [--catch-up-since <unix-time>] <watchDir> <outputDir>   (until killed)
 
 let cliArgs = CommandLine.arguments
 func cliUsage() -> Never {
     FileHandle.standardError.write("""
         usage: FlacToAiff --convert [--format original|max48|cd] <file-or-folder>... <outputDir>
-               FlacToAiff --watch [--format original|max48|cd] <watchDir> <outputDir>
+               FlacToAiff --watch [--format original|max48|cd] [--catch-up-since <unix-time>] <watchDir> <outputDir>
 
         """.data(using: .utf8)!)
     exit(2)
@@ -38,6 +38,12 @@ if cliArgs.count >= 2 && (cliArgs[1] == "--convert" || cliArgs[1] == "--watch") 
         options.mode = mode
         args.removeFirst(2)
     }
+    var catchUpSince: Date?   // --watch only; for tests of the launch catch-up
+    if watching && args.first == "--catch-up-since" {
+        guard args.count >= 2, let seconds = TimeInterval(args[1]) else { cliUsage() }
+        catchUpSince = Date(timeIntervalSince1970: seconds)
+        args.removeFirst(2)
+    }
     guard watching ? args.count == 2 : args.count >= 2 else { cliUsage() }
     let outputRoot = URL(fileURLWithPath: args.removeLast(), isDirectory: true)
     try? FileManager.default.createDirectory(at: outputRoot, withIntermediateDirectories: true)
@@ -45,17 +51,18 @@ if cliArgs.count >= 2 && (cliArgs[1] == "--convert" || cliArgs[1] == "--watch") 
     if watching {
         let converter = DispatchQueue(label: "local.flactoaiff.cli-watch")   // serial, off the watcher's queue
         let watchRoot = FolderWatcher.resolve(URL(fileURLWithPath: args[0], isDirectory: true))
-        let watcher = FolderWatcher(root: watchRoot) { files in
+        let watcher = FolderWatcher(root: watchRoot) { files, _ in
             converter.async {
                 for item in Jobs.watched(files, root: watchRoot, into: outputRoot) {
                     _ = cliPrint(Jobs.run(item, outputRoot: outputRoot, options: options))
                 }
             }
         }
-        guard watcher.start() else {
+        guard watcher.start(catchingUpSince: catchUpSince) else {
             FileHandle.standardError.write("ERROR \(args[0]): not a folder that can be watched\n".data(using: .utf8)!)
             exit(1)
         }
+        FileHandle.standardError.write("WATCHING \(watchRoot.path)\n".data(using: .utf8)!)   // ready: tests wait for this
         dispatchMain()
     }
 
@@ -289,7 +296,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settings: Settings
     let queue: ConversionQueue
     private var watcher: FolderWatcher?
+    private var watchGeneration = 0   // batches from a replaced or stopped watcher are dropped
     private var watchSubscription: AnyCancellable?
+    private var watchedUntilTimer: Timer?
 
     override init() {
         let settings = Settings()
@@ -314,32 +323,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
-        catchUpWatchFolder()
-        // Publishes the current value on subscribe, so this also starts watching at launch.
-        watchSubscription = settings.$watchFolder.sink { [weak self] folder in self?.watch(folder) }
+        // At launch, also convert what landed in the watch folder while nothing was watching.
+        watch(settings.watchFolder, catchingUpSince: settings.watchedUntil.addingTimeInterval(-120))
+        watchSubscription = settings.$watchFolder.dropFirst().sink { [weak self] folder in self?.watch(folder) }
+        // Catch-up starts where watching stopped, so moved-away AIFFs aren't re-made every launch.
+        // Recorded every minute too, in case the app doesn't quit cleanly.
+        watchedUntilTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            self?.recordWatchedUntil()
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) { recordWatchedUntil() }
+
+    private func recordWatchedUntil() {
+        if watcher != nil { settings.watchedUntil = Date() }
     }
 
     /// (Re)start the watcher for `folder`; nil stops watching.
-    private func watch(_ folder: URL?) {
+    private func watch(_ folder: URL?, catchingUpSince since: Date? = nil) {
         watcher?.stop()
         watcher = nil
+        watchGeneration += 1
         guard let folder = folder else { return }
         let root = FolderWatcher.resolve(folder)
-        let started = FolderWatcher(root: root) { [weak self] files in
-            DispatchQueue.main.async { self?.queue.enqueueWatched(files, root: root) }
+        let generation = watchGeneration
+        let started = FolderWatcher(root: root) { [weak self] files, quiet in
+            DispatchQueue.main.async {
+                guard let self = self, self.watchGeneration == generation else { return }
+                self.queue.enqueueWatched(files, root: root, quietSkips: quiet)
+            }
         }
-        if started.start() { watcher = started }   // not available: the settings bar says so
-    }
-
-    /// Convert FLACs that landed in the watch folder while the app was quit.
-    private func catchUpWatchFolder() {
-        guard let folder = settings.watchFolder else { return }
-        let since = settings.watchSince
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let root = FolderWatcher.resolve(folder)
-            let files = FolderWatcher.catchUp(root: root, since: since)
-            DispatchQueue.main.async { self?.queue.enqueueWatched(files, root: root, quietSkips: true) }
-        }
+        if started.start(catchingUpSince: since) { watcher = started }   // not available: the settings bar says so
     }
 
     /// Dock-icon drops and Finder "Open With". On a cold launch this can arrive before
