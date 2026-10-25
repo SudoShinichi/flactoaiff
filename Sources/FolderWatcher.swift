@@ -12,27 +12,39 @@ final class FolderWatcher {
     /// a live event, so an "Already converted" result isn't news.
     private let onReady: (_ files: [URL], _ quiet: Bool) -> Void
     private let queue = DispatchQueue(label: "local.flactoaiff.watcher")
+    private let onQueue = DispatchSpecificKey<Void>()
+    /// Set by stop() before it waits for the queue, so a long catch-up scan gives up early.
+    private let cancelled = LockedFlag()
 
     // All below: watcher queue only (after start()).
     private var stream: FSEventStreamRef?
     private var timer: DispatchSourceTimer?
     private var stopped = false
     private var startedAt = Date()
+    private var polls = 0
 
     private struct Snapshot: Equatable {
         let size: Int64
         let modified: TimeInterval
         static let unseen = Snapshot(size: -1, modified: 0)
     }
-    private var pending: [String: (snap: Snapshot, quiet: Bool)] = [:]
-    private var handedOff: [String: Snapshot] = [:]
+    private var pending: [String: (snap: Snapshot, quiet: Bool, stablePolls: Int)] = [:]
+    /// Files handed off, by file system ID: a rename or move inside the volume keeps the ID,
+    /// so re-sorting converted albums doesn't convert them again. `path` is where it was last
+    /// seen, for forgetting files that are gone.
+    private struct FileID: Hashable { let device: Int32; let inode: UInt64 }
+    private var handedOff: [FileID: (snap: Snapshot, path: String)] = [:]
 
     init(root: URL, onReady: @escaping (_ files: [URL], _ quiet: Bool) -> Void) {
         self.root = Self.resolve(root)
         self.onReady = onReady
+        queue.setSpecific(key: onQueue, value: ())
     }
 
-    deinit { shutDown() }
+    deinit {
+        // On the queue that runs the callback, so an FSEvents callback can't outlive self.
+        if DispatchQueue.getSpecific(key: onQueue) != nil { shutDown() } else { queue.sync { shutDown() } }
+    }
 
     /// `folder` with symlinks resolved; unchanged if it doesn't exist.
     static func resolve(_ folder: URL) -> URL {
@@ -75,14 +87,17 @@ final class FolderWatcher {
         }
         if let since = since {
             queue.async { [self] in
-                for file in arrivals(under: root, since: since) { track(file.path, quiet: true) }
+                for file in arrivals(under: root, since: since) where !cancelled.isSet { track(file.path, quiet: true) }
             }
         }
         return true
     }
 
     /// After this returns, onReady is never called again.
-    func stop() { queue.sync { shutDown() } }
+    func stop() {
+        cancelled.set()
+        queue.sync { shutDown() }
+    }
 
     // MARK: - On the watcher's queue
 
@@ -116,6 +131,8 @@ final class FolderWatcher {
             let arrived = FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemRenamed)
             guard flags & arrived != 0 else { return }
             let dir = URL(fileURLWithPath: path, isDirectory: true)
+            // A package (an .app, Safari's .download) is one item, as in folder drops.
+            guard (try? dir.resourceValues(forKeys: [.isPackageKey]))?.isPackage != true else { return }
             for rel in Jobs.flacs(in: dir) { track(dir.appendingPathComponent(rel).path, quiet: false) }
         } else if (path as NSString).pathExtension.lowercased() == "flac" {
             track(path, quiet: false)
@@ -123,29 +140,33 @@ final class FolderWatcher {
     }
 
     private func track(_ path: String, quiet: Bool) {
-        if pending[path] == nil { pending[path] = (.unseen, quiet) }
+        if pending[path] == nil { pending[path] = (.unseen, quiet, 0) }
     }
 
     /// FLACs under `dir` that arrived at or after `since`: the file's own Finder "Date Added",
     /// or that of a folder between it and `root` (a folder moved in keeps its files' old dates).
     /// Volumes without Date Added (exFAT, FAT) fall back to the creation date.
     private func arrivals(under dir: URL, since: Date) -> [URL] {
-        var folderArrived: [String: Bool] = [:]
-        func arrived(_ url: URL) -> Bool {
+        Jobs.flacs(in: dir).map { dir.appendingPathComponent($0) }.filter { file in
+            !cancelled.isSet && (Self.arrivalDate(of: file, under: root) ?? .distantPast) >= since
+        }
+    }
+
+    /// When `file` arrived in the watch folder `root`: the newest Finder "Date Added" of the
+    /// file and of the folders between it and `root` (a folder moved in keeps its files' old
+    /// dates), never later than now. Volumes without Date Added (exFAT, FAT) use the creation date.
+    static func arrivalDate(of file: URL, under root: URL) -> Date? {
+        func added(_ url: URL) -> Date? {
             let values = try? url.resourceValues(forKeys: [.addedToDirectoryDateKey, .creationDateKey])
-            guard let date = values?.addedToDirectoryDate ?? values?.creationDate else { return false }
-            return date >= since
+            return values?.addedToDirectoryDate ?? values?.creationDate
         }
-        return Jobs.flacs(in: dir).map { dir.appendingPathComponent($0) }.filter { file in
-            if arrived(file) { return true }
-            var folder = file.deletingLastPathComponent()
-            while folder.path.hasPrefix(root.path + "/") {
-                if folderArrived[folder.path] == nil { folderArrived[folder.path] = arrived(folder) }
-                if folderArrived[folder.path]! { return true }
-                folder = folder.deletingLastPathComponent()
-            }
-            return false
+        var newest = added(file)
+        var folder = file.deletingLastPathComponent()
+        while folder.path.hasPrefix(root.path + "/") {
+            if let date = added(folder), date > newest ?? .distantPast { newest = date }
+            folder = folder.deletingLastPathComponent()
         }
+        return newest.map { min($0, Date()) }
     }
 
     /// Hidden components, or a package (e.g. an .app) anywhere between `root` and `path`.
@@ -162,6 +183,10 @@ final class FolderWatcher {
 
     private func poll() {
         guard !stopped else { return }
+        polls += 1
+        if polls % 600 == 0 {   // every ~10 min, forget files that are gone, so this doesn't grow forever
+            handedOff = handedOff.filter { FileManager.default.fileExists(atPath: $0.value.path) }
+        }
         var ready: [URL] = [], readyQuiet: [URL] = []
         let now = Date().timeIntervalSince1970
         for (path, entry) in pending {
@@ -169,17 +194,32 @@ final class FolderWatcher {
             guard stat(path, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else { pending[path] = nil; continue }
             let snap = Snapshot(size: Int64(st.st_size),
                                 modified: TimeInterval(st.st_mtimespec.tv_sec) + TimeInterval(st.st_mtimespec.tv_nsec) / 1e9)
+            let stable = snap == entry.snap ? entry.stablePolls + 1 : 0
+            // A future mtime (a wrong clock on the copy's source, a NAS running ahead) can't
+            // show the file's age, so it has to stay unchanged for three polls instead.
+            let settled = now - snap.modified >= 2 ? stable >= 1 : snap.modified > now && stable >= 3
             // Empty: a placeholder (Firefox creates one, then renames the download over it).
-            guard snap == entry.snap, snap.size > 0, now - snap.modified >= 2 else {
-                pending[path] = (snap, entry.quiet); continue
+            guard snap.size > 0, settled else {
+                pending[path] = (snap, entry.quiet, stable); continue
             }
             pending[path] = nil
-            guard handedOff[path] != snap else { continue }   // a repeated event for a file already handed off
-            handedOff[path] = snap
+            // Already handed off (a repeated event, or the file was renamed or moved since):
+            // just note where it is now.
+            let id = FileID(device: st.st_dev, inode: st.st_ino)
+            if handedOff[id]?.snap == snap { handedOff[id]?.path = path; continue }
+            handedOff[id] = (snap, path)
             if entry.quiet { readyQuiet.append(URL(fileURLWithPath: path)) } else { ready.append(URL(fileURLWithPath: path)) }
         }
         func sorted(_ urls: [URL]) -> [URL] { urls.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending } }
         if !readyQuiet.isEmpty { onReady(sorted(readyQuiet), true) }
         if !ready.isEmpty { onReady(sorted(ready), false) }
     }
+}
+
+/// A Bool that any thread can set and read.
+private final class LockedFlag {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    func set() { lock.lock(); value = true; lock.unlock() }
 }

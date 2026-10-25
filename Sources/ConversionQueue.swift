@@ -10,8 +10,15 @@ final class ConversionQueue: ObservableObject {
     private let settings: Settings
     private let worker = DispatchQueue(label: "local.flactoaiff.conversion", qos: .userInitiated)   // serial
     private var batchesInFlight = 0   // main thread only
+    /// When each watched FLAC still waiting to convert arrived (main thread only). Files that
+    /// failed only because Save to was unavailable stay in here too, to be tried again.
+    private var unfinishedWatched: [URL: Date] = [:]
 
     init(settings: Settings) { self.settings = settings }
+
+    /// The earliest arrival among watched FLACs not converted yet: the launch catch-up has to
+    /// start no later than this, or files still queued at quit would never be tried again.
+    var oldestUnfinishedWatched: Date? { unfinishedWatched.values.min() }
 
     /// AIFFs to select in Finder: converted and already-converted outputs.
     var outputs: [URL] { rows.compactMap(\.output) }
@@ -27,6 +34,10 @@ final class ConversionQueue: ObservableObject {
     /// list files that were converted before.
     func enqueueWatched(_ files: [URL], root watchRoot: URL, quietSkips: Bool = false) {
         guard !files.isEmpty else { return }
+        for file in files where unfinishedWatched[file] == nil {
+            // The date catch-up tests, so watchedUntil can't fall back past what it would find.
+            unfinishedWatched[file] = FolderWatcher.arrivalDate(of: file, under: watchRoot) ?? Date()
+        }
         submit(quietSkips: quietSkips) { root in Jobs.watched(files, root: watchRoot, into: root) }
     }
 
@@ -38,6 +49,10 @@ final class ConversionQueue: ObservableObject {
         worker.async {
             for item in makeItems(root) {
                 let row = autoreleasepool { Jobs.run(item, outputRoot: root, options: options) }   // free each file's temporaries before the next
+                if case .job(let job) = item {
+                    let retry = row.kind == .failed && row.detail == ConvertError.outputFolderUnavailable.description
+                    DispatchQueue.main.async { if !retry { self.unfinishedWatched[job.source] = nil } }
+                }
                 if quietSkips && row.kind == .alreadyConverted { continue }
                 DispatchQueue.main.async { self.rows.append(row) }
             }
@@ -47,6 +62,9 @@ final class ConversionQueue: ObservableObject {
             }
         }
     }
+
+    /// The watch folder changed or watching stopped: its files no longer hold catch-up back.
+    func forgetWatched() { unfinishedWatched = [:] }
 
     func clear() {
         guard !isWorking else { return }

@@ -12,11 +12,13 @@ struct Checks {
 
 /// Checks a finished AIFF before it is published. A failure throws, so the caller discards it.
 enum Verifier {
-    static func verify(aiff: URL, source: StreamInfo?, expected: Converter.OutputFormat, lossless: Bool,
+    static func verify(aiff: URL, source: StreamInfo?, expected: Converter.OutputFormat,
                        writtenFrames: [ID3Frame]) throws -> Checks {
-        let damage = ProcessInfo.processInfo.environment["FLACTOAIFF_TEST_DAMAGE"]   // TEST HOOK — only test.sh sets this
+        #if TEST_HOOKS   // only test.sh's own build has these; the app never reads the variable
+        let damage = ProcessInfo.processInfo.environment["FLACTOAIFF_TEST_DAMAGE"]
         if damage == "format" { damageSampleSize(aiff) }
         if damage == "tags" { dropPictures(aiff, writtenFrames) }
+        #endif
         guard let info = TagIO.aiffInfo(aiff) else {
             throw ConvertError.verificationFailed("Output format is wrong (the AIFF can't be read back)")
         }
@@ -35,14 +37,16 @@ enum Verifier {
             if source.samples > 0 {
                 let want = Double(source.samples) * Double(expected.rate ?? source.rate) / Double(source.rate)
                 guard abs(Double(info.frames) - want) <= 2 else {
-                    throw ConvertError.afconvertFailed(
+                    throw ConvertError.verificationFailed(
                         "FLAC is incomplete — only \(Int(Double(info.frames) / want * 100))% of the audio is there")
                 }
             }
         }
 
         var checks = Checks()
-        if lossless, let source, let md5 = source.md5, source.bitsPerSample <= info.bitsPerSample {
+        // Lossless: no resampling, no dither, and nothing cut off the source's bit depth.
+        if let source, let md5 = source.md5, expected.rate == nil, !expected.dither,
+           source.bitsPerSample <= expected.depth {
             guard try audioMD5(aiff, info, sourceBits: source.bitsPerSample) == md5 else {
                 throw audioMismatch
             }
@@ -160,6 +164,7 @@ enum Verifier {
         return Data(md5.finalize())
     }
 
+    #if TEST_HOOKS
     /// Test hook: change COMM's sample size (afconvert writes COMM first, at file offset 26).
     private static func damageSampleSize(_ url: URL) {
         guard let fh = try? FileHandle(forUpdating: url) else { return }
@@ -192,4 +197,5 @@ enum Verifier {
             try? TagIO.appendID3Chunk(tag, to: url)
         }
     }
+    #endif
 }

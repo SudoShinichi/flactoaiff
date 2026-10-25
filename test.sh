@@ -1,6 +1,8 @@
 #!/bin/bash
 # End-to-end test: synthesize a FLAC, run the converter core, verify the AIFF.
 set -euo pipefail
+# A "$(…)" assignment whose command fails would end the run silently under -e: such
+# assignments end in "|| true" so the check after them prints a proper FAIL.
 cd "$(dirname "$0")"
 
 BIN="build/FlacToAiff.app/Contents/MacOS/FlacToAiff"
@@ -8,6 +10,11 @@ BIN="build/FlacToAiff.app/Contents/MacOS/FlacToAiff"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+
+# Failure paths real files can't reach are driven by FLACTOAIFF_TEST_DAMAGE, which only a
+# binary compiled with -D TEST_HOOKS reads; the app itself never does (check 35).
+HOOKBIN="$TMP/FlacToAiff-testhooks"
+swiftc -O -target arm64-apple-macos12.0 -D TEST_HOOKS -o "$HOOKBIN" Sources/*.swift -framework AppKit -framework SwiftUI
 
 echo "1. Synthesize 24-bit source and encode to FLAC…"
 say -o "$TMP/tone.aiff" --data-format=BEI24@44100 "test tone for flac conversion"
@@ -26,7 +33,7 @@ echo "$INFO" | grep -q "24-bit big-endian signed integer" || { echo "FAIL: wrong
 echo "$INFO" | grep -q "44100 Hz" || { echo "FAIL: sample rate not preserved"; echo "$INFO"; exit 1; }
 
 echo "4. Converting the same file again skips it (no 'tone 2.aiff')…"
-SECOND="$("$BIN" --convert "$TMP/tone.flac" "$DEST")"
+SECOND="$("$BIN" --convert "$TMP/tone.flac" "$DEST" || true)"
 [ "$SECOND" = "SKIP $DEST/tone.aiff" ] || { echo "FAIL: expected SKIP, got: $SECOND"; exit 1; }
 [ ! -e "$DEST/tone 2.aiff" ] || { echo "FAIL: duplicate 'tone 2.aiff' created"; exit 1; }
 
@@ -66,7 +73,7 @@ COUNT="$(ls -A "$DEST2" | wc -l | tr -d ' ')"
 [ "$COUNT" -eq 1 ] || { echo "FAIL: expected 1 file, got $COUNT"; ls -A "$DEST2"; exit 1; }
 afinfo "$DEST2/tone.aiff" | grep -q "24-bit big-endian signed integer" \
     || { echo "FAIL: raced output is not a valid 24-bit AIFF"; exit 1; }
-SKIPS="$(cat "$TMP"/race.* | grep -c '^SKIP')"
+SKIPS="$(cat "$TMP"/race.* | grep -c '^SKIP' || true)"
 [ "$SKIPS" -eq 3 ] || { echo "FAIL: expected 3 SKIP lines, got $SKIPS"; cat "$TMP"/race.*; exit 1; }
 
 echo "10. --convert with wrong arity exits 2 with usage (never launches GUI)…"
@@ -92,10 +99,10 @@ while True:   # copy metadata blocks, clearing the "last block" flag
     if h & 0x80: break
 vals = [b'TITLE=Song Title', b'ARTIST=Some Artist', 'ALBUM=Album 蒸發'.encode()] + [e.replace('\\0', '\0').encode() for e in extra if not e.startswith('PICTURE=')]   # literal \0 in an argument becomes NUL
 body = struct.pack('<I', 0) + struct.pack('<I', len(vals)) + b''.join(struct.pack('<I', len(v)) + v for v in vals)
-pics = 'PICTURE=1' in extra or 'PICTURE=2' in extra
+pics = 'PICTURE=1' in extra or 'PICTURE=2' in extra or 'PICTURE=empty' in extra
 out += bytes([0x04 if pics else 0x84]) + len(body).to_bytes(3, 'big') + body
 if pics:   # front cover, 16 header-ish JPEG bytes: players only need the bytes back
-    jpg = bytes.fromhex('ffd8ffe000104a46494600010100000100010000ffd9')
+    jpg = b'' if 'PICTURE=empty' in extra else bytes.fromhex('ffd8ffe000104a46494600010100000100010000ffd9')   # empty: a tagger's placeholder
     pic = struct.pack('>I', 3) + struct.pack('>I', 10) + b'image/jpeg' + struct.pack('>I', 0) + struct.pack('>5I', 1, 1, 24, 0, len(jpg)) + jpg
     last = 'PICTURE=2' not in extra
     out += bytes([0x86 if last else 0x06]) + len(pic).to_bytes(3, 'big') + pic
@@ -192,7 +199,7 @@ mkdir -p "$TMP/NoFlacs"; echo x > "$TMP/NoFlacs/readme.txt"
 set +e; "$BIN" --convert "$TMP/NoFlacs" "$FOLD" 2>"$TMP/nf.err"; RC=$?; set -e
 [ "$RC" -eq 1 ] && grep -q "No .flac files found" "$TMP/nf.err" || { echo "FAIL: empty folder not reported"; exit 1; }
 [ ! -e "$FOLD/NoFlacs" ] || { echo "FAIL: empty output folder created"; exit 1; }
-MULTI="$("$BIN" --convert "$TMP/tone.flac" "$TMP/t16.flac" "$TMP/multi" | grep -c '^OK ')"
+MULTI="$("$BIN" --convert "$TMP/tone.flac" "$TMP/t16.flac" "$TMP/multi" | grep -c '^OK ' || true)"
 [ "$MULTI" -eq 2 ] || { echo "FAIL: expected 2 OK lines for two inputs, got $MULTI"; exit 1; }
 
 echo "17. Unwritable output folder fails clearly instead of writing elsewhere…"
@@ -219,7 +226,7 @@ hdiutil attach -quiet -nobrowse -mountpoint "$EXFAT" "$TMP/exfat.dmg"
 trap 'hdiutil detach -quiet -force "$EXFAT" 2>/dev/null; rm -rf "$TMP"' EXIT
 set +e; "$BIN" --convert "$TMP/tone.flac" "$EXFAT" >/dev/null 2>"$TMP/exfat.err"; RC=$?; set -e
 [ "$RC" -eq 0 ] && [ -f "$EXFAT/tone.aiff" ] || { echo "FAIL: exFAT conversion failed"; cat "$TMP/exfat.err"; exit 1; }
-SECOND="$("$BIN" --convert "$TMP/tone.flac" "$EXFAT")"
+SECOND="$("$BIN" --convert "$TMP/tone.flac" "$EXFAT" || true)"
 [ "$SECOND" = "SKIP $EXFAT/tone.aiff" ] || { echo "FAIL: exFAT re-convert should SKIP, got: $SECOND"; exit 1; }
 ls -A "$EXFAT" | grep -q "\.partial$" && { echo "FAIL: temp .partial file left on exFAT"; exit 1; }
 
@@ -237,7 +244,7 @@ SAME="$TMP/same"
 "$BIN" --convert "$TMP/A/CD1" "$TMP/B/CD1" "$SAME" >/dev/null
 fmt "$SAME/CD1/01.aiff"   | grep -q "24-bit" || { echo "FAIL: A/CD1 not in CD1"; ls -R "$SAME"; exit 1; }
 fmt "$SAME/CD1 2/01.aiff" | grep -q "16-bit" || { echo "FAIL: B/CD1 not in 'CD1 2'"; ls -R "$SAME"; exit 1; }
-AGAIN="$("$BIN" --convert "$TMP/A/CD1" "$TMP/B/CD1" "$SAME" | grep -c '^SKIP')"
+AGAIN="$("$BIN" --convert "$TMP/A/CD1" "$TMP/B/CD1" "$SAME" | grep -c '^SKIP' || true)"
 [ "$AGAIN" -eq 2 ] || { echo "FAIL: re-dropping both should skip both, got $AGAIN SKIPs"; exit 1; }
 
 echo "22. Packages inside a dropped folder (e.g. an .app or a library bundle) are not entered…"
@@ -390,7 +397,7 @@ dd if=/dev/zero of="$TMP/nomd5.flac" bs=1 seek=26 count=16 conv=notrunc 2>/dev/n
 [ "$("$BIN" --convert "$TMP/nomd5.flac" "$V1")" = "OK $V1/nomd5.aiff${TAB}format checked" ] || { echo "FAIL: zero MD5 should be format checked"; exit 1; }
 [ "$("$BIN" --convert --format max48 "$TMP/hr96.flac" "$TMP/v3")" = "OK $TMP/v3/hr96.aiff${TAB}format checked" ] || { echo "FAIL: resampled should be format checked"; exit 1; }
 
-set +e; FLACTOAIFF_TEST_DAMAGE=format "$BIN" --convert "$TMP/tone.flac" "$TMP/v4" >/dev/null 2>"$TMP/v.err"; RC=$?; set -e
+set +e; FLACTOAIFF_TEST_DAMAGE=format "$HOOKBIN" --convert "$TMP/tone.flac" "$TMP/v4" >/dev/null 2>"$TMP/v.err"; RC=$?; set -e
 [ "$RC" -eq 1 ] && grep -q "Output format is wrong" "$TMP/v.err" || { echo "FAIL: format damage not refused"; cat "$TMP/v.err"; exit 1; }
 [ ! -e "$TMP/v4/tone.aiff" ] && ! ls -A "$TMP/v4" 2>/dev/null | grep -q "\.partial$" || { echo "FAIL: output or .partial left after format refusal"; exit 1; }
 
@@ -401,7 +408,7 @@ tag_flac "$TMP/tone.flac" "$TMP/full.flac" 'GENRE=(13)' BPM=128 INITIALKEY=Am 'C
 [ "$("$BIN" --convert "$TMP/full.flac" "$TMP/t1")" = "OK $TMP/t1/full.aiff${TAB}verified" ] || { echo "FAIL: fully tagged FLAC not verified"; exit 1; }
 tag_flac "$TMP/hr96.flac" "$TMP/fullhr.flac" BPM=128 PICTURE=1
 [ "$("$BIN" --convert --format max48 "$TMP/fullhr.flac" "$TMP/t2")" = "OK $TMP/t2/fullhr.aiff${TAB}tags verified" ] || { echo "FAIL: resampled tagged FLAC not 'tags verified'"; exit 1; }
-set +e; FLACTOAIFF_TEST_DAMAGE=tags "$BIN" --convert "$TMP/full.flac" "$TMP/t3" >/dev/null 2>"$TMP/v.err"; RC=$?; set -e
+set +e; FLACTOAIFF_TEST_DAMAGE=tags "$HOOKBIN" --convert "$TMP/full.flac" "$TMP/t3" >/dev/null 2>"$TMP/v.err"; RC=$?; set -e
 [ "$RC" -eq 1 ] && grep -q "Tag check failed: artwork" "$TMP/v.err" || { echo "FAIL: tag damage not refused"; cat "$TMP/v.err"; exit 1; }
 [ ! -e "$TMP/t3/full.aiff" ] && ! ls -A "$TMP/t3" 2>/dev/null | grep -q "\.partial$" || { echo "FAIL: output or .partial left after tag refusal"; exit 1; }
 
@@ -417,10 +424,66 @@ with open(sys.argv[1], 'wb') as f:
 PY
 afconvert -f flac -d flac "$TMP/long.aiff" "$TMP/long.flac" || { echo "FAIL: test setup: no long FLAC"; exit 1; }
 rm "$TMP/long.aiff"
-RSS="$(/usr/bin/time -l "$BIN" --convert "$TMP/long.flac" "$TMP/t4" 2>&1 >"$TMP/long.out" | awk '/maximum resident/ {print $1}')"
+RSS="$(/usr/bin/time -l "$BIN" --convert "$TMP/long.flac" "$TMP/t4" 2>&1 >"$TMP/long.out" | awk '/maximum resident/ {print $1}' || true)"
 rm -f "$TMP/long.flac"
 grep -q "${TAB}verified" "$TMP/long.out" || { echo "FAIL: long file not verified"; cat "$TMP/long.out"; exit 1; }
 [ "${RSS:-999999999}" -lt 100000000 ] || { echo "FAIL: verifying a 210 MB file peaked at $RSS bytes of memory"; exit 1; }
+
+# id3_prefix <src.flac> <dst.flac>: prepend an ID3v2.3 tag (TIT2 "Prefix"), as some taggers do.
+id3_prefix() {
+python3 -I - "$1" "$2" <<'PY'
+import sys
+body = b'\x00Prefix'
+frame = b'TIT2' + len(body).to_bytes(4, 'big') + b'\x00\x00' + body
+size = len(frame)
+tag = b'ID3\x03\x00\x00' + bytes([size >> 21 & 0x7F, size >> 14 & 0x7F, size >> 7 & 0x7F, size & 0x7F]) + frame
+open(sys.argv[2], 'wb').write(tag + open(sys.argv[1], 'rb').read())
+PY
+}
+
+echo "32. Tag quirks never block a conversion: a NUL in a tag name, an empty picture…"
+tag_flac "$TMP/tone.flac" "$TMP/nulkey.flac" 'AB\0C=val'
+OUT32="$("$BIN" --convert "$TMP/nulkey.flac" "$TMP/q" 2>&1 || true)"
+[ "$OUT32" = "OK $TMP/q/nulkey.aiff${TAB}verified" ] || { echo "FAIL: NUL in a tag name blocked the conversion: $OUT32"; exit 1; }
+tag_flac "$TMP/tone.flac" "$TMP/emptypic.flac" PICTURE=empty
+OUT32="$("$BIN" --convert "$TMP/emptypic.flac" "$TMP/q" 2>&1 || true)"
+[ "$OUT32" = "OK $TMP/q/emptypic.aiff${TAB}verified" ] || { echo "FAIL: empty picture blocked the conversion: $OUT32"; exit 1; }
+
+echo "33. A FLAC with a leading ID3v2 tag keeps its tags and all checks, and fails when truncated…"
+tag_flac "$TMP/tone.flac" "$TMP/plain.flac"
+id3_prefix "$TMP/plain.flac" "$TMP/prefixed.flac"
+OUT33="$("$BIN" --convert "$TMP/prefixed.flac" "$TMP/p" 2>&1 || true)"
+[ "$OUT33" = "OK $TMP/p/prefixed.aiff${TAB}verified" ] || { echo "FAIL: ID3-prefixed FLAC not fully verified: $OUT33"; exit 1; }
+check_tags "$TMP/p/prefixed.aiff" || { echo "FAIL: ID3-prefixed FLAC lost its Vorbis tags"; exit 1; }
+PSIZE="$(stat -f %z "$TMP/prefixed.flac")"
+head -c $((PSIZE / 2)) "$TMP/prefixed.flac" > "$TMP/prefixhalf.flac"
+set +e; "$BIN" --convert "$TMP/prefixhalf.flac" "$TMP/p" >/dev/null 2>"$TMP/ph.err"; RC=$?; set -e
+[ "$RC" -eq 1 ] && grep -q "incomplete" "$TMP/ph.err" || { echo "FAIL: truncated ID3-prefixed FLAC not refused"; cat "$TMP/ph.err"; exit 1; }
+
+echo "34. Watch folder: renames inside it and packages moved in don't convert; future timestamps do…"
+W4="$TMP/watch4"; O4="$TMP/watchout4"; mkdir -p "$W4" "$TMP/in4/Album/Disc 1" "$TMP/in4/Plug.bundle/Contents"
+cp "$TMP/tone.flac" "$TMP/in4/Album/Disc 1/a.flac"
+cp "$TMP/tone.flac" "$TMP/in4/Plug.bundle/Contents/inner.flac"
+"$BIN" --watch "$W4" "$O4" > "$TMP/watch4.log" 2>&1 &
+WATCHER=$!
+wait_log "$TMP/watch4.log" '^WATCHING ' || { echo "FAIL: --watch never reported it was ready"; exit 1; }
+mv "$TMP/in4/Album" "$W4/"
+wait_log "$TMP/watch4.log" "^OK .*/Album/Disc 1/a.aiff" || { echo "FAIL: moved-in album not converted"; cat "$TMP/watch4.log"; exit 1; }
+mv "$W4/Album" "$W4/Album (2024)"                     # rename a folder inside the watch folder
+mv "$W4/Album (2024)/Disc 1/a.flac" "$W4/Album (2024)/Disc 1/A Side.flac"   # and a file
+mkdir "$W4/Sorted"; mv "$W4/Album (2024)" "$W4/Sorted/"                     # and move one into a subfolder
+mv "$TMP/in4/Plug.bundle" "$W4/"                      # a package moved in
+cp -p "$TMP/t16.flac" "$TMP/future.flac"; touch -t "$(date -v+2H +%Y%m%d%H%M)" "$TMP/future.flac"
+cp -p "$TMP/future.flac" "$W4/future.flac"            # clock-skewed mtime, 2 h ahead
+wait_log "$TMP/watch4.log" "^OK .*/future.aiff" || { echo "FAIL: FLAC with a future timestamp never converted"; cat "$TMP/watch4.log"; exit 1; }
+sleep 3
+kill $WATCHER; wait $WATCHER 2>/dev/null || true
+[ "$(grep -c '^OK' "$TMP/watch4.log")" -eq 2 ] || { echo "FAIL: renames or a package produced conversions"; cat "$TMP/watch4.log"; exit 1; }
+[ ! -e "$O4/Plug.bundle" ] || { echo "FAIL: package contents converted"; exit 1; }
+
+echo "35. The app itself ignores the test-only damage hooks…"
+OUT35="$(FLACTOAIFF_TEST_DAMAGE=format "$BIN" --convert "$TMP/tone.flac" "$TMP/nohook" 2>&1 || true)"
+[ "$OUT35" = "OK $TMP/nohook/tone.aiff${TAB}verified" ] || { echo "FAIL: the app binary honours FLACTOAIFF_TEST_DAMAGE: $OUT35"; exit 1; }
 
 echo
 echo "PASS: all checks."
