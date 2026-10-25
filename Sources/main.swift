@@ -29,7 +29,20 @@ func cliPrint(_ row: Row) -> Bool {
     return row.kind == .converted || row.kind == .alreadyConverted
 }
 
+/// Killed (Ctrl-C, kill): end the running afconvert and delete its temp file before exiting.
+var cliSignalSources: [DispatchSourceSignal] = []
+func cliStopOnSignals() {
+    for sig in [SIGTERM, SIGINT, SIGHUP] {
+        signal(sig, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: sig, queue: .global())
+        source.setEventHandler { Converter.stopAll(); exit(128 + sig) }
+        source.resume()
+        cliSignalSources.append(source)
+    }
+}
+
 if cliArgs.count >= 2 && (cliArgs[1] == "--convert" || cliArgs[1] == "--watch") {
+    cliStopOnSignals()
     let watching = cliArgs[1] == "--watch"
     var args = Array(cliArgs.dropFirst(2))
     var options = ConvertOptions()
@@ -51,9 +64,9 @@ if cliArgs.count >= 2 && (cliArgs[1] == "--convert" || cliArgs[1] == "--watch") 
     if watching {
         let converter = DispatchQueue(label: "local.flactoaiff.cli-watch")   // serial, off the watcher's queue
         let watchRoot = FolderWatcher.resolve(URL(fileURLWithPath: args[0], isDirectory: true))
-        let watcher = FolderWatcher(root: watchRoot) { files, _ in
+        let watcher = FolderWatcher(root: watchRoot) { ready, _ in
             converter.async {
-                for item in Jobs.watched(files, root: watchRoot, into: outputRoot) {
+                for item in Jobs.watched(ready.map(\.file), root: watchRoot, into: outputRoot) {
                     _ = autoreleasepool { cliPrint(Jobs.run(item, outputRoot: outputRoot, options: options)) }
                 }
             }
@@ -75,9 +88,15 @@ if cliArgs.count >= 2 && (cliArgs[1] == "--convert" || cliArgs[1] == "--watch") 
 
 // MARK: - GUI
 
+/// Whether the watch folder could be watched (main thread).
+final class WatchState: ObservableObject {
+    @Published var unavailable = false
+}
+
 struct DropView: View {
     @ObservedObject var queue: ConversionQueue
     @ObservedObject var settings: Settings
+    @ObservedObject var watchState: WatchState
     @State private var targeted = false
 
     var body: some View {
@@ -130,7 +149,7 @@ struct DropView: View {
                 }
                 .fixedSize()
                 .help(settings.watchFolder?.path ?? "Convert new FLACs that land in a folder, while the app is open")
-                if let folder = settings.watchFolder, !FileManager.default.fileExists(atPath: folder.path) {
+                if settings.watchFolder != nil && watchState.unavailable {
                     Text("Watch folder not available").font(.caption).foregroundColor(.red)
                 }
                 Spacer()
@@ -297,9 +316,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settings: Settings
     let queue: ConversionQueue
     private var watcher: FolderWatcher?
+    private let watchState = WatchState()
     private var watchGeneration = 0   // batches from a replaced or stopped watcher are dropped
     private var watchSubscription: AnyCancellable?
-    private var watchedUntilTimer: Timer?
+    private var watchTimer: Timer?
+    private var volumeObservers: [NSObjectProtocol] = []
 
     override init() {
         let settings = Settings()
@@ -319,26 +340,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         window.isReleasedWhenClosed = false   // AppDelegate holds a strong ref; avoid over-release
         window.title = "FLAC → AIFF"
-        window.contentView = NSHostingView(rootView: DropView(queue: queue, settings: settings))
+        window.contentView = NSHostingView(rootView: DropView(queue: queue, settings: settings, watchState: watchState))
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
         // At launch, also convert what landed in the watch folder while nothing was watching.
-        watch(settings.watchFolder, catchingUpSince: settings.watchedUntil.addingTimeInterval(-120))
+        watch(settings.watchFolder, catchingUpSince: catchUpStart)
         watchSubscription = settings.$watchFolder.dropFirst().sink { [weak self] folder in self?.watch(folder) }
         // Catch-up starts where watching stopped, so moved-away AIFFs aren't re-made every launch.
         // Recorded every minute too, in case the app doesn't quit cleanly.
-        watchedUntilTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        watchTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             self?.recordWatchedUntil()
+            self?.followWatchFolder()
+        }
+        // A watch folder on a drive that mounts after launch, or is ejected and comes back.
+        let center = NSWorkspace.shared.notificationCenter
+        volumeObservers = [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification].map {
+            center.addObserver(forName: $0, object: nil, queue: .main) { [weak self] _ in self?.followWatchFolder() }
         }
     }
 
-    func applicationWillTerminate(_ notification: Notification) { recordWatchedUntil() }
+    func applicationWillTerminate(_ notification: Notification) {
+        recordWatchedUntil()
+        Converter.stopAll()   // don't leave afconvert writing a temp file onto the output drive
+    }
+
+    private var catchUpStart: Date { settings.watchedUntil.addingTimeInterval(-120) }
 
     private func recordWatchedUntil() {
-        guard watcher != nil else { return }
-        settings.watchedUntil = min(Date(), queue.oldestUnfinishedWatched ?? .distantFuture)
+        guard let watcher = watcher else { return }   // not watching: keep the date it stopped
+        settings.watchedUntil = [Date(), queue.oldestUnfinishedWatched, watcher.oldestUnfinished].compactMap { $0 }.min()!
+    }
+
+    /// Start watching once the watch folder is there, stop while it's gone.
+    private func followWatchFolder() {
+        guard let folder = settings.watchFolder else { return }
+        var isDir: ObjCBool = false
+        let there = FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDir) && isDir.boolValue
+        if watcher == nil && there {
+            watch(folder, catchingUpSince: catchUpStart)
+        } else if watcher != nil && !there {
+            recordWatchedUntil()   // the catch-up starts here when it's back
+            watch(nil)
+            watchState.unavailable = true
+        }
     }
 
     /// (Re)start the watcher for `folder`; nil stops watching.
@@ -347,16 +393,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         watcher = nil
         watchGeneration += 1
         queue.forgetWatched()
+        watchState.unavailable = false
         guard let folder = folder else { return }
         let root = FolderWatcher.resolve(folder)
         let generation = watchGeneration
-        let started = FolderWatcher(root: root) { [weak self] files, quiet in
+        let started = FolderWatcher(root: root) { [weak self] ready, quiet in
             DispatchQueue.main.async {
                 guard let self = self, self.watchGeneration == generation else { return }
-                self.queue.enqueueWatched(files, root: root, quietSkips: quiet)
+                self.queue.enqueueWatched(ready, root: root, quietSkips: quiet)
             }
         }
-        if started.start(catchingUpSince: since) { watcher = started }   // not available: the settings bar says so
+        // Not available: the settings bar says so, and followWatchFolder starts it once it is.
+        if started.start(catchingUpSince: since) { watcher = started } else { watchState.unavailable = true }
     }
 
     /// Dock-icon drops and Finder "Open With". On a cold launch this can arrive before
@@ -373,7 +421,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard queue.isWorking else { return .terminateNow }
         let alert = NSAlert()
         alert.messageText = "Quit while converting?"
-        alert.informativeText = "Files not yet converted will be skipped. You can drop them again later — finished AIFFs are kept."
+        alert.informativeText = "The file being converted and those not yet converted are skipped. You can drop them again later — finished AIFFs are kept."
         alert.addButton(withTitle: "Keep Converting")
         alert.addButton(withTitle: "Quit")
         if alert.runModal() == .alertSecondButtonReturn { return .terminateNow }
@@ -397,6 +445,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenu.addItem(withTitle: "Quit FLAC → AIFF",
                         action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appMenuItem.submenu = appMenu
+
+        // Cut, copy and paste reach text fields (e.g. Go to Folder in the folder pickers) only
+        // through menu key equivalents.
+        let editMenuItem = NSMenuItem()
+        mainMenu.addItem(editMenuItem)
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenuItem.submenu = editMenu
 
         let windowMenuItem = NSMenuItem()
         mainMenu.addItem(windowMenuItem)

@@ -82,9 +82,9 @@ enum Converter {
     static func outputFormat(for source: SourceFormat, mode: OutputMode) -> OutputFormat {
         let matched: Int
         switch source.depth ?? 24 {   // on detection failure, fail toward lossless
-        case ...16:    matched = 16   // 4–16-bit → BEI16 (lossless up-conversion for <16)
+        case ...16:    matched = 16   // 16-bit (macOS decodes no FLAC below it) → BEI16
         case 17...24:  matched = 24   // 17–24-bit (incl. 20-bit) → BEI24
-        default:       matched = 32   // 25–32-bit → BEI32
+        default:       matched = 32   // 25–32-bit → BEI32 (should macOS decode them one day)
         }
         switch mode {
         case .original:
@@ -142,9 +142,9 @@ enum Converter {
                 if format.dither { args += ["--dither", "1"] }   // TPDF
                 let (code, err) = run(afconvert, args + [flacURL.path, tmp.path])
                 guard code == 0 else {
-                    // Apple's FLAC decoder stops at 24-bit (macOS 26 still does); say so plainly.
-                    if let depth = streamInfo?.bitsPerSample, depth > 24 {
-                        throw ConvertError.afconvertFailed("macOS can't decode \(depth)-bit FLAC — save it as 24-bit in an audio editor first")
+                    // Apple's FLAC decoder only takes 16, 20 and 24-bit (macOS 26 still); say so plainly.
+                    if let depth = streamInfo?.bitsPerSample, ![16, 20, 24].contains(depth) {
+                        throw ConvertError.afconvertFailed("macOS can't decode \(depth)-bit FLAC — save it as 16 or 24-bit in an audio editor first")
                     }
                     throw ConvertError.afconvertFailed(err.isEmpty ? "afconvert exited with code \(code)" : err.trimmingCharacters(in: .whitespacesAndNewlines))
                 }
@@ -159,11 +159,14 @@ enum Converter {
 
                 guard try publish(tmp, as: final) else {
                     try? FileManager.default.removeItem(at: tmp)
+                    inFlight.remove(temp: tmp)
                     return .alreadyConverted(final)
                 }
+                inFlight.remove(temp: tmp)
                 return .converted(final, note: reductionNote(source, format), checks: checks)
             } catch {
                 try? FileManager.default.removeItem(at: tmp)
+                inFlight.remove(temp: tmp)
                 throw error
             }
         } catch {
@@ -227,7 +230,7 @@ enum Converter {
             counterLock.lock(); let n = counter; counter += 1; counterLock.unlock()
             let url = dir.appendingPathComponent("\(partialPrefix)\(getpid()).\(n)\(partialSuffix)")
             let fd = open(url.path, O_CREAT | O_EXCL | O_WRONLY, 0o644)
-            if fd >= 0 { close(fd); return url }
+            if fd >= 0 { close(fd); inFlight.add(temp: url); return url }
             let e = errno
             guard e == EEXIST else {
                 throw ConvertError.saveFailed("Could not write to \(dir.path): \(String(cString: strerror(e)))")
@@ -256,6 +259,36 @@ enum Converter {
         }
     }
 
+    // MARK: - Stopping on quit
+
+    /// Temp files and afconvert runs of conversions in progress, so quitting can end them.
+    private final class InFlight {
+        private let lock = NSLock()
+        private var temps = Set<URL>()
+        private var processes: [ObjectIdentifier: Process] = [:]
+        private var stopping = false
+
+        func add(temp: URL) { lock.lock(); temps.insert(temp); lock.unlock() }
+        func remove(temp: URL) { lock.lock(); temps.remove(temp); lock.unlock() }
+        /// False once stopAll has run: the process must not start.
+        func add(_ p: Process) -> Bool { lock.lock(); defer { lock.unlock() }; if !stopping { processes[ObjectIdentifier(p)] = p }; return !stopping }
+        func remove(_ p: Process) { lock.lock(); processes[ObjectIdentifier(p)] = nil; lock.unlock() }
+        var isStopping: Bool { lock.lock(); defer { lock.unlock() }; return stopping }
+
+        func stopAll() {
+            lock.lock(); stopping = true; let (running, files) = (Array(processes.values), temps); lock.unlock()
+            for p in running where p.isRunning { kill(p.processIdentifier, SIGKILL) }
+            let deadline = Date().addingTimeInterval(2)
+            for p in running { while p.isRunning && Date() < deadline { usleep(10_000) } }   // before the file it writes goes
+            for f in files { unlink(f.path) }
+        }
+    }
+    private static let inFlight = InFlight()
+
+    /// Quitting: end any running afconvert and delete unfinished temp files, so neither is
+    /// left behind on the output drive. Conversions in progress fail; nothing more starts.
+    static func stopAll() { inFlight.stopAll() }
+
     // MARK: - Process helpers
 
     /// Run a tool, returning (exit code, captured stderr).
@@ -266,7 +299,10 @@ enum Converter {
         let errPipe = Pipe()
         p.standardError = errPipe
         p.standardOutput = FileHandle.nullDevice
+        guard inFlight.add(p) else { return (-1, "Quitting") }
+        defer { inFlight.remove(p) }
         do { try p.run() } catch { return (-1, "\(error)") }
+        if inFlight.isStopping { kill(p.processIdentifier, SIGKILL) }   // stopAll ran while it launched
         let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
         return (p.terminationStatus, String(data: errData, encoding: .utf8) ?? "")

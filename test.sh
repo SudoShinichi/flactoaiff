@@ -6,7 +6,8 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 BIN="build/FlacToAiff.app/Contents/MacOS/FlacToAiff"
-[ -x "$BIN" ] || { echo "Build first: ./build.sh"; exit 1; }
+# Test what the sources say now, not an older build.
+if [ ! -x "$BIN" ] || [ -n "$(find Sources scripts build.sh -newer "$BIN" | head -1)" ]; then ./build.sh; fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -223,7 +224,7 @@ echo "19. Converting onto an exFAT volume (typical DJ USB stick) works…"
 hdiutil create -quiet -size 20m -fs ExFAT -volname FTA_EXFAT "$TMP/exfat.dmg"
 EXFAT="$TMP/exfat"; mkdir "$EXFAT"
 hdiutil attach -quiet -nobrowse -mountpoint "$EXFAT" "$TMP/exfat.dmg"
-trap 'hdiutil detach -quiet -force "$EXFAT" 2>/dev/null; rm -rf "$TMP"' EXIT
+trap 'hdiutil detach -quiet -force "$EXFAT" 2>/dev/null || true; rm -rf "$TMP"' EXIT
 set +e; "$BIN" --convert "$TMP/tone.flac" "$EXFAT" >/dev/null 2>"$TMP/exfat.err"; RC=$?; set -e
 [ "$RC" -eq 0 ] && [ -f "$EXFAT/tone.aiff" ] || { echo "FAIL: exFAT conversion failed"; cat "$TMP/exfat.err"; exit 1; }
 SECOND="$("$BIN" --convert "$TMP/tone.flac" "$EXFAT" || true)"
@@ -276,7 +277,7 @@ echo "23. Watch folder: a FLAC copied in converts; hidden and non-FLAC files are
 WATCH="$TMP/watch"; WOUT="$TMP/watchout"; mkdir -p "$WATCH" "$WOUT"
 "$BIN" --watch "$WATCH" "$WOUT" > "$TMP/watch.log" 2>&1 &
 WATCHER=$!
-trap 'kill $WATCHER 2>/dev/null; hdiutil detach -quiet -force "$EXFAT" 2>/dev/null; rm -rf "$TMP"' EXIT
+trap 'kill $WATCHER 2>/dev/null || true; hdiutil detach -quiet -force "$EXFAT" 2>/dev/null || true; rm -rf "$TMP"' EXIT
 wait_log "$TMP/watch.log" '^WATCHING ' || { echo "FAIL: --watch never reported it was ready"; cat "$TMP/watch.log"; exit 1; }
 cp "$TMP/tone.flac" "$WATCH/new.flac"
 cp "$TMP/tone.flac" "$WATCH/.hidden.flac"
@@ -485,15 +486,92 @@ echo "35. The app itself ignores the test-only damage hooks…"
 OUT35="$(FLACTOAIFF_TEST_DAMAGE=format "$BIN" --convert "$TMP/tone.flac" "$TMP/nohook" 2>&1 || true)"
 [ "$OUT35" = "OK $TMP/nohook/tone.aiff${TAB}verified" ] || { echo "FAIL: the app binary honours FLACTOAIFF_TEST_DAMAGE: $OUT35"; exit 1; }
 
-echo "36. A 32-bit FLAC, which macOS can't decode, fails with a clear reason in every format…"
-swiftc -O -o "$TMP/make-flac32" scripts/make-flac32.swift
-"$TMP/make-flac32" "$TMP/s32.flac"
-for m in original max48 cd; do
-    set +e; "$BIN" --convert --format "$m" "$TMP/s32.flac" "$TMP/s32-$m" 2>"$TMP/s32.err"; RC=$?; set -e
-    [ "$RC" -eq 1 ] && grep -q "can't decode 32-bit FLAC" "$TMP/s32.err" \
-        || { echo "FAIL: $m: 32-bit FLAC not refused clearly"; cat "$TMP/s32.err"; exit 1; }
-    [ -z "$(ls -A "$TMP/s32-$m" 2>/dev/null)" ] || { echo "FAIL: $m: 32-bit FLAC left files behind"; ls -A "$TMP/s32-$m"; exit 1; }
+echo "36. 8, 12 and 32-bit FLACs, which macOS can't decode, fail with a clear reason in every format…"
+MAKEFLAC="$TMP/make-flac"
+swiftc -O -o "$MAKEFLAC" scripts/make-flac.swift
+for b in 16 24; do   # the fixture writer makes FLACs macOS decodes bit for bit
+    "$MAKEFLAC" $b 44100 1 "$TMP/fix$b.flac"
+    OUT36="$("$BIN" --convert "$TMP/fix$b.flac" "$TMP/fix" 2>&1 || true)"
+    [ "$OUT36" = "OK $TMP/fix/fix$b.aiff${TAB}verified" ] || { echo "FAIL: $b-bit fixture didn't verify: $OUT36"; exit 1; }
 done
+for b in 8 12 32; do
+    "$MAKEFLAC" $b 44100 1 "$TMP/s$b.flac"
+    for m in original max48 cd; do
+        set +e; "$BIN" --convert --format "$m" "$TMP/s$b.flac" "$TMP/s$b-$m" 2>"$TMP/s$b.err"; RC=$?; set -e
+        [ "$RC" -eq 1 ] && grep -q "can't decode $b-bit FLAC" "$TMP/s$b.err" \
+            || { echo "FAIL: $m: $b-bit FLAC not refused clearly"; cat "$TMP/s$b.err"; exit 1; }
+        [ -z "$(ls -A "$TMP/s$b-$m" 2>/dev/null)" ] || { echo "FAIL: $m: $b-bit FLAC left files behind"; ls -A "$TMP/s$b-$m"; exit 1; }
+    done
+done
+
+echo "37. Watch folder: FLACs already there stay alone when tagged, renamed or re-sorted; finished downloads convert…"
+W5="$TMP/watch5"; O5="$TMP/watchout5"; mkdir -p "$W5/Old Album"
+cp "$TMP/tone.flac" "$W5/pre1.flac"; cp "$TMP/tone.flac" "$W5/pre2.flac"; cp "$TMP/tone.flac" "$W5/pre3.flac"
+cp "$TMP/tone.flac" "$W5/pre4.flac"; cp "$TMP/tone.flac" "$W5/Old Album/x.flac"
+sleep 1.1
+"$BIN" --watch "$W5" "$O5" > "$TMP/watch5.log" 2>&1 &
+WATCHER=$!
+wait_log "$TMP/watch5.log" '^WATCHING ' || { echo "FAIL: --watch never reported it was ready"; exit 1; }
+xattr -w com.apple.metadata:_kMDItemUserTags x "$W5/pre1.flac"   # a Finder tag
+chmod 600 "$W5/pre2.flac"
+mv "$W5/pre3.flac" "$W5/renamed.flac"
+mkdir "$W5/Sorted"; mv "$W5/pre4.flac" "$W5/Sorted/"              # moving resets Date Added
+mv "$W5/Old Album" "$W5/Old Album (2020)"
+head -c $((SIZE / 2)) "$TMP/tone.flac" > "$W5/dl.flac.part"      # a browser download…
+tail -c +$((SIZE / 2 + 1)) "$TMP/tone.flac" >> "$W5/dl.flac.part"
+mv "$W5/dl.flac.part" "$W5/dl.flac"                               # …renamed into place at the end
+wait_log "$TMP/watch5.log" "^OK .*/dl.aiff" || { echo "FAIL: finished download not converted"; cat "$TMP/watch5.log"; exit 1; }
+sleep 3
+kill $WATCHER; wait $WATCHER 2>/dev/null || true
+[ "$(grep -c '^OK' "$TMP/watch5.log")" -eq 1 ] || { echo "FAIL: FLACs that were already there got converted"; cat "$TMP/watch5.log"; exit 1; }
+
+echo "38. Launch catch-up finds a download that started before watching stopped and finished after…"
+W6="$TMP/watch6"; O6="$TMP/watchout6"; mkdir -p "$W6"
+head -c $((SIZE / 2)) "$TMP/tone.flac" > "$W6/late.flac.part"
+cp "$TMP/tone.flac" "$W6/old.flac"
+sleep 1.1; STOPPED="$(date +%s)"; sleep 1.1                     # watching "stopped" here
+tail -c +$((SIZE / 2 + 1)) "$TMP/tone.flac" >> "$W6/late.flac.part"
+mv "$W6/late.flac.part" "$W6/late.flac"
+"$BIN" --watch --catch-up-since "$STOPPED" "$W6" "$O6" > "$TMP/watch6.log" 2>&1 &
+WATCHER=$!
+wait_log "$TMP/watch6.log" "^OK .*/late.aiff" || { echo "FAIL: download finished while quit was missed"; cat "$TMP/watch6.log"; exit 1; }
+sleep 3
+kill $WATCHER; wait $WATCHER 2>/dev/null || true
+[ ! -e "$O6/old.aiff" ] || { echo "FAIL: catch-up converted a FLAC from before watching stopped"; exit 1; }
+
+echo "39. Watch folder: a FLAC without a length in its header, written with a pause, converts in full…"
+cp "$TMP/tone.flac" "$TMP/nolen.flac"
+dd if=/dev/zero of="$TMP/nolen.flac" bs=1 seek=21 count=21 conv=notrunc 2>/dev/null   # no length, no MD5
+printf "$(printf '\\x%02x' $(( $(od -An -tu1 -j21 -N1 "$TMP/tone.flac") & 0xF0 )))" \
+    | dd of="$TMP/nolen.flac" bs=1 seek=21 conv=notrunc 2>/dev/null                  # keep the bit depth's last bit
+W7="$TMP/watch7"; O7="$TMP/watchout7"; mkdir -p "$W7"
+"$BIN" --watch "$W7" "$O7" > "$TMP/watch7.log" 2>&1 &
+WATCHER=$!
+wait_log "$TMP/watch7.log" '^WATCHING ' || { echo "FAIL: --watch never reported it was ready"; exit 1; }
+head -c $((SIZE / 2)) "$TMP/nolen.flac" > "$W7/nolen.flac"
+sleep 5                                                          # an encoder pausing mid-file
+tail -c +$((SIZE / 2 + 1)) "$TMP/nolen.flac" >> "$W7/nolen.flac"
+wait_log "$TMP/watch7.log" "^OK .*/nolen.aiff" 45 || { echo "FAIL: FLAC without a length never converted"; cat "$TMP/watch7.log"; exit 1; }
+kill $WATCHER; wait $WATCHER 2>/dev/null || true
+[ "$(frames "$O7/nolen.aiff")" = "$(frames "$WOUT/new.aiff")" ] || { echo "FAIL: FLAC without a length converted while half written"; exit 1; }
+
+echo "40. Killing a conversion stops afconvert and leaves no temp file…"
+"$MAKEFLAC" 24 96000 240 "$TMP/long.flac"
+"$BIN" --convert --format cd "$TMP/long.flac" "$TMP/killed" >/dev/null 2>&1 &
+CONV=$!
+for ((i = 0; i < 100; i++)); do pgrep -f "afconvert.*$TMP/killed" >/dev/null && break; sleep 0.1; done
+pgrep -f "afconvert.*$TMP/killed" >/dev/null || { echo "FAIL: conversion never started"; exit 1; }
+kill $CONV; wait $CONV 2>/dev/null || true
+sleep 0.5
+pgrep -f "afconvert.*$TMP/killed" >/dev/null && { echo "FAIL: afconvert kept running"; pkill -f "afconvert.*$TMP/killed"; exit 1; }
+[ -z "$(ls -A "$TMP/killed")" ] || { echo "FAIL: killed conversion left files"; ls -A "$TMP/killed"; exit 1; }
+
+echo "41. System errors read as sentences, not error dumps…"
+mkdir -p "$TMP/syserr/Album" "$TMP/syserrout"; cp "$TMP/tone.flac" "$TMP/syserr/Album/"
+echo x > "$TMP/syserrout/Album"                                  # a file where the album folder goes
+set +e; "$BIN" --convert "$TMP/syserr/Album" "$TMP/syserrout" 2>"$TMP/syserr.err"; RC=$?; set -e
+[ "$RC" -eq 1 ] && grep -q "^ERROR tone.flac: " "$TMP/syserr.err" && ! grep -q "Error Domain" "$TMP/syserr.err" \
+    || { echo "FAIL: system error not readable"; cat "$TMP/syserr.err"; exit 1; }
 
 echo
 echo "PASS: all checks."

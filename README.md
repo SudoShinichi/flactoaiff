@@ -118,10 +118,14 @@ is open, new FLACs that appear there are converted into **Save to**. That includ
 unzipped or moved into the folder, and their subfolders are kept: `Watch/Album/01.flac` becomes
 `Save to/Album/01.aiff`.
 
-- A file is picked up once it has stopped changing. A download that stalls for longer than that
-  shows an "incomplete" row, then converts once it is complete.
+- A file is picked up once it has stopped changing for 2 seconds. A download that stalls for
+  longer than that shows an "incomplete" row, then converts once it is complete. A FLAC whose
+  header doesn't record its length (some encoders write it last) waits 30 seconds instead.
 - FLACs that arrive while the app is quit are picked up at the next launch.
-- Files already in the folder when you start watching are left alone.
+- Files already in the folder when you start watching are left alone, even if you later rename
+  them, move them within the folder or give them Finder tags. Changing a FLAC's contents, for
+  example editing its tags in a tag editor, makes it count as new.
+- If the folder's drive isn't connected, watching starts as soon as it is.
 
 ### Tags
 
@@ -161,17 +165,15 @@ is preserved.
 
 - **Apple Silicon only, and you build it yourself.** There's no signed or notarized release.
 - **FLAC input only.** WAV, ALAC and other formats are skipped.
-- **No 32-bit FLAC.** macOS's FLAC decoder stops at 24-bit, so these files fail with a clear
-  message. They are rare; save them as 24-bit in an audio editor first.
+- **16, 20 and 24-bit FLAC only.** macOS's FLAC decoder handles nothing else, so rare 8, 12
+  or 32-bit FLACs fail with a clear message. Save them as 16 or 24-bit in an audio editor first.
 - **Duplicates are detected by file name.** If `track.aiff` already exists in the output folder,
   a different FLAC named `track.flac` is reported as "Already converted".
 - **Changing the format doesn't redo existing files.** Delete the AIFFs first.
 - **Tags are checked only through Apple's reader.** Nothing tests them in rekordbox or Serato
   automatically, although both read ID3v2.3.
-- **The watch folder works only while the app is open.**
-  - Renaming converted files inside it doesn't convert them again until the next launch; after a
-    relaunch, a renamed file counts as new.
-  - On exFAT volumes, renames may always count as new.
+- **The watch folder works only while the app is open.** On exFAT volumes, renaming a FLAC that
+  arrived while the app was open may convert it again.
 
 ## Troubleshooting
 
@@ -179,8 +181,8 @@ is preserved.
 says. It is still being downloaded or copied, or the download broke off. Wait for it to finish,
 or download it again.
 
-**"macOS can't decode 32-bit FLAC".** macOS only decodes FLAC up to 24-bit. Save the file as
-24-bit in an audio editor, then add it again.
+**"macOS can't decode 32-bit FLAC"** (or 8 or 12-bit). macOS only decodes 16, 20 and 24-bit
+FLAC. Save the file as 16 or 24-bit in an audio editor, then add it again.
 
 **"Audio doesn't match the FLAC's checksum — the FLAC may be damaged".** The decoded audio
 doesn't match the checksum the FLAC was encoded with, so the FLAC file itself is probably
@@ -195,7 +197,8 @@ isn't connected. Reconnect the drive or choose another folder. Watched files tha
 this reason are retried at the next launch.
 
 **"Watch folder not available".** The watch folder was renamed or deleted, or its drive isn't
-connected. Choose it again under **Watch** once it's back.
+connected. Watching starts by itself once the drive is back; a renamed or deleted folder has to
+be chosen again under **Watch**.
 
 **macOS says the app can't be opened.** Builds you make yourself open normally. A copy that
 arrived by download or AirDrop is quarantined: right-click → **Open** once, or run
@@ -211,8 +214,8 @@ permission goes to FlacToAiff itself.
 ./build.sh && ./test.sh
 ```
 
-`test.sh` runs end-to-end checks on real FLAC files that it generates itself. It covers:
-- bit-depth and sample-rate handling in every format, including a 32-bit FLAC that macOS can't decode
+`test.sh` rebuilds the app if the sources changed, then runs end-to-end checks on real FLAC files that it generates itself. It covers:
+- bit-depth and sample-rate handling in every format, including the depths macOS can't decode
 - tag and artwork transfer, including unusual tags
 - the verification checks, including tampered and truncated files
 - duplicate handling and concurrent conversions
@@ -245,7 +248,7 @@ FlacToAiff.app/Contents/MacOS/FlacToAiff --watch   [--format original|max48|cd] 
 | `Sources/ConversionQueue.swift` | Background queue shared by all inputs |
 | `Sources/Settings.swift` | Persisted settings |
 | `scripts/make-icon.swift` | Draws the app icon; rendered by `build.sh` |
-| `scripts/make-flac32.swift` | Writes a 32-bit FLAC for `test.sh` (macOS tools can't) |
+| `scripts/make-flac.swift` | Writes FLACs of any bit depth for `test.sh` (macOS tools can't) |
 
 ## License
 

@@ -22,6 +22,7 @@ struct Row: Identifiable {
     let detail: String
     let output: URL?   // the AIFF (converted or already converted), for Reveal in Finder
     let checks: String?   // what verification covered ("verified" …), for converted rows
+    var retryable = false   // failed because the output folder wasn't there: worth trying again later
 }
 
 /// Turning dropped files/folders into work, and work into rows. UI-free.
@@ -63,17 +64,19 @@ enum Jobs {
 
     /// FLACs anywhere under `folder`, as sorted paths relative to it. Hidden files
     /// (incl. AppleDouble `._x.flac`) and package contents are skipped; symlinked FLACs count.
-    static func flacs(in folder: URL) -> [String] {
-        let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey],
-                                                    options: [.skipsHiddenFiles, .skipsPackageDescendants])
+    /// Once `isCancelled` returns true, the walk stops and returns what it found so far.
+    static func flacs(in folder: URL, isCancelled: () -> Bool = { false }) -> [String] {
+        guard let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey],
+                                                          options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return [] }
         let rootDepth = folder.standardizedFileURL.pathComponents.count
-        return (walker?.allObjects as? [URL] ?? [])
-            .filter { file in
-                file.pathExtension.lowercased() == "flac"
-                    && (try? file.resolvingSymlinksInPath().resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
-            }
-            .map { $0.standardizedFileURL.pathComponents.dropFirst(rootDepth).joined(separator: "/") }
-            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        var found: [String] = []
+        while let file = walker.nextObject() as? URL, !isCancelled() {
+            guard file.pathExtension.lowercased() == "flac",
+                  (try? file.resolvingSymlinksInPath().resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
+            else { continue }
+            found.append(file.standardizedFileURL.pathComponents.dropFirst(rootDepth).joined(separator: "/"))
+        }
+        return found.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
     /// Files from the watch folder `watchRoot`: each keeps its subfolder relative to
@@ -114,12 +117,14 @@ enum Jobs {
             return Row(name: name, kind: .skipped, detail: message, output: nil, checks: nil)
         case .job(let job):
             let name = job.source.lastPathComponent
-            var isDir: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: outputRoot.path, isDirectory: &isDir), isDir.boolValue,
-                  FileManager.default.isWritableFile(atPath: outputRoot.path) else {
-                return Row(name: name, kind: .failed,
-                           detail: ConvertError.outputFolderUnavailable.description, output: nil, checks: nil)
+            func outputRootAvailable() -> Bool {
+                var isDir: ObjCBool = false
+                return FileManager.default.fileExists(atPath: outputRoot.path, isDirectory: &isDir) && isDir.boolValue
+                    && FileManager.default.isWritableFile(atPath: outputRoot.path)
             }
+            let unavailable = Row(name: name, kind: .failed, detail: ConvertError.outputFolderUnavailable.description,
+                                  output: nil, checks: nil, retryable: true)
+            guard outputRootAvailable() else { return unavailable }
             do {
                 switch try Converter.convert(flacURL: job.source, destDir: job.destDir, options: options) {
                 case .converted(let out, let note, let checks):
@@ -132,7 +137,10 @@ enum Jobs {
             } catch ConvertError.notFlac {
                 return Row(name: name, kind: .skipped, detail: ConvertError.notFlac.description, output: nil, checks: nil)
             } catch {
-                return Row(name: name, kind: .failed, detail: "\(error)", output: nil, checks: nil)
+                // A drive pulled mid-conversion fails in all sorts of ways; the cause is what matters.
+                if !outputRootAvailable() { return unavailable }
+                let message = error is ConvertError ? "\(error)" : error.localizedDescription
+                return Row(name: name, kind: .failed, detail: message, output: nil, checks: nil)
             }
         }
     }
