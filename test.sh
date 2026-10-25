@@ -90,7 +90,8 @@ grep -q "usage:" "$TMP/usage.txt" || { echo "FAIL: no usage message"; exit 1; }
 
 # tag_flac <src.flac> <dst.flac> [KEY=VALUE…]: copy src, adding TITLE/ARTIST/ALBUM (non-ASCII) Vorbis
 # comments plus any extras (a literal \0 in one becomes NUL). PICTURE=1 adds a tiny front-cover
-# PICTURE block, PICTURE=2 that plus a back cover.
+# PICTURE block, PICTURE=2 that plus a back cover. PICTURE=mixed writes, in this order, a URL
+# picture, a file icon, a back cover and a front cover.
 tag_flac() {
 python3 -I - "$@" <<'PY'
 import sys, struct
@@ -105,7 +106,15 @@ while True:   # copy metadata blocks, clearing the "last block" flag
 vals = [b'TITLE=Song Title', b'ARTIST=Some Artist', 'ALBUM=Album 蒸發'.encode()] + [e.replace('\\0', '\0').encode() for e in extra if not e.startswith('PICTURE=')]   # literal \0 in an argument becomes NUL
 body = struct.pack('<I', 0) + struct.pack('<I', len(vals)) + b''.join(struct.pack('<I', len(v)) + v for v in vals)
 pics = 'PICTURE=1' in extra or 'PICTURE=2' in extra or 'PICTURE=empty' in extra
-out += bytes([0x04 if pics else 0x84]) + len(body).to_bytes(3, 'big') + body
+mixed = 'PICTURE=mixed' in extra
+out += bytes([0x04 if pics or mixed else 0x84]) + len(body).to_bytes(3, 'big') + body
+if mixed:
+    def block(kind, mime, data):
+        return struct.pack('>I', kind) + struct.pack('>I', len(mime)) + mime + struct.pack('>I', 0) + struct.pack('>5I', 1, 1, 24, 0, len(data)) + data
+    blocks = [block(3, b'-->', b'https://example.com/cover.jpg'), block(1, b'image/png', b'\x89PNGicon'),
+              block(4, b'image/jpeg', b'\xff\xd8back\xff\xd9'), block(3, b'image/jpeg', b'\xff\xd8front\xff\xd9')]
+    for n, b in enumerate(blocks):
+        out += bytes([0x86 if n == len(blocks) - 1 else 0x06]) + len(b).to_bytes(3, 'big') + b
 if pics:   # front cover, 16 header-ish JPEG bytes: players only need the bytes back
     jpg = b'' if 'PICTURE=empty' in extra else bytes.fromhex('ffd8ffe000104a46494600010100000100010000ffd9')   # empty: a tagger's placeholder
     pic = struct.pack('>I', 3) + struct.pack('>I', 10) + b'image/jpeg' + struct.pack('>I', 0) + struct.pack('>5I', 1, 1, 24, 0, len(jpg)) + jpg
@@ -578,4 +587,26 @@ set +e; "$BIN" --convert "$TMP/syserr/Album" "$TMP/syserrout" 2>"$TMP/syserr.err
     || { echo "FAIL: system error not readable"; cat "$TMP/syserr.err"; exit 1; }
 
 echo
+echo "42. Tags: the year is found in any date order, and the front cover comes first…"
+tag_flac "$TMP/tone.flac" "$TMP/order.flac" DATE=03.05.2026 PICTURE=mixed
+[ "$("$BIN" --convert "$TMP/order.flac" "$TMP/t42")" = "OK $TMP/t42/order.aiff${TAB}verified" ] || { echo "FAIL: mixed pictures not verified"; exit 1; }
+# Prints TYER's value, then one "APIC <type>" line per picture, in file order.
+FRAMES42="$(python3 -I - "$TMP/t42/order.aiff" <<'PY'
+import sys
+d = open(sys.argv[1], 'rb').read()
+tag = d[d.rindex(b'ID3 ') + 8:]
+i, end = 10, 10 + sum((b & 0x7F) << (7 * (3 - n)) for n, b in enumerate(tag[6:10]))
+while i + 10 <= end and tag[i] != 0:
+    fid, size = tag[i:i+4].decode(), int.from_bytes(tag[i+4:i+8], 'big')
+    body = tag[i+10:i+10+size]
+    if fid == 'TYER': print(body[1:].decode('utf-16').rstrip('\0'))
+    if fid == 'APIC':
+        mime_end = body.index(b'\0', 1)
+        print('APIC', body[mime_end + 1])
+    i += 10 + size
+PY
+)" || true
+EXPECT42="$(printf '2026\nAPIC 3\nAPIC 4\nAPIC 1')"
+[ "$FRAMES42" = "$EXPECT42" ] || { echo "FAIL: expected year 2026 and pictures 3, 4, 1 without the URL picture, got:"; echo "$FRAMES42"; exit 1; }
+
 echo "PASS: all checks."

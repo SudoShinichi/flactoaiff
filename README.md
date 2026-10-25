@@ -142,8 +142,10 @@ FLAC tags (Vorbis comments) are mapped to ID3v2.3 frames:
 | `COMPOSER` | Composer | | `COMMENT` | Comment |
 | `REMIXER` | Remixer | | `ISRC` | ISRC |
 
-Embedded pictures become cover art. Other tags are kept as custom `TXXX` fields. Non-Latin text
-is preserved.
+Embedded pictures become cover art, with the front cover first, because players that show one
+picture show the first. Pictures that are only a web link are left out. The year is taken from
+`DATE` in any order, so `2026-03-01` and `03.05.2026` both give 2026. Other tags are kept as
+custom `TXXX` fields. Non-Latin text is preserved.
 
 ## How it works
 
