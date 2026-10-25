@@ -56,7 +56,7 @@ struct Player: Identifiable, Hashable {
             let formats = ([FlacSource.name, WavSource.name, AlacSource.name].filter(plays.contains) + ["AIFF"])
             let list = formats.dropLast().joined(separator: ", ") + " and " + formats.last!
             return "Plays \(list) up to 24-bit / \(khz) kHz. Higher sample rates are lowered to \(khz) kHz, "
-                + "32-bit files to 24-bit. From the manufacturer's manual."
+                + "32-bit files to 24-bit. Based on the manufacturer's specifications; check your player's manual."
         }
     }
 }

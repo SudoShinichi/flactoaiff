@@ -19,25 +19,60 @@ protocol AudioSource {
     /// MD5 of the samples in FLAC's form (signed little-endian, ceil(bits/8) bytes each), or
     /// nil when there is none. A lossless AIFF must hash to the same.
     func audioChecksum() -> Data?
-    /// Identifies the source among files with the same name, so an AIFF made from another
-    /// file isn't mistaken for this one's. Recorded in the AIFF it becomes.
-    var fingerprint: String { get }
+    /// Where the encoded audio sits in the file (not the tags), or nil when unknown.
+    var audioRange: (offset: UInt64, length: UInt64)? { get }
     /// Why this file is left alone without trying, or nil to convert it.
     var skipReason: String? { get }
-    /// A plain reason for a failed decode, when the format can explain it better than afconvert.
-    var decodeFailureReason: String? { get }
+    /// A plain reason for a failed decode, given afconvert's error, when the format can explain
+    /// it better than afconvert.
+    func decodeFailureReason(afconvertError: String) -> String?
 }
 
 extension AudioSource {
     func audioChecksum() -> Data? { info?.md5 }
+    var audioRange: (offset: UInt64, length: UInt64)? { nil }
     var skipReason: String? { nil }
-    var decodeFailureReason: String? { nil }
+    func decodeFailureReason(afconvertError: String) -> String? { nil }
 
-    /// The audio checksum when there is one, else the file's size.
+    /// Identifies the source among files with the same name, so an AIFF made from another
+    /// file isn't mistaken for this one's; recorded in the AIFF it becomes. Retagging must not
+    /// change it, and it must be cheap: "Already converted" checks it for every file added again.
+    /// A FLAC's own MD5 when it has one; else the length and format with a hash of the audio's
+    /// first and last 64 KiB; the file size only when neither can be read.
     var fingerprint: String {
-        if let md5 = audioChecksum() { return "md5:" + md5.map { String(format: "%02x", $0) }.joined() }
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-        return "size:\(size)"
+        if let md5 = info?.md5 { return "md5:" + hex(md5) }
+        if let i = info, let range = audioRange, let edges = edgeHash(range) {
+            return "audio:\(i.samples):\(i.rate):\(i.channels):\(i.bitsPerSample):\(edges)"
+        }
+        return "size:\(fileSize)"
+    }
+
+    /// Whether `recorded`, the fingerprint an existing AIFF holds, is this file's. AIFFs made
+    /// before 2026-10-26 recorded a WAV's full MD5, or an ALAC file's size: those still match.
+    func isSource(of recorded: String) -> Bool {
+        if recorded == fingerprint { return true }
+        if recorded.hasPrefix("md5:"), info?.md5 == nil, let md5 = audioChecksum() { return recorded == "md5:" + hex(md5) }
+        if recorded.hasPrefix("size:") { return recorded == "size:\(fileSize)" }
+        return false
+    }
+
+    private var fileSize: Int { (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0 }
+
+    private func hex(_ d: Data) -> String { d.map { String(format: "%02x", $0) }.joined() }
+
+    /// MD5 of the first and last 64 KiB of `range` (all of it when shorter).
+    private func edgeHash(_ range: (offset: UInt64, length: UInt64)) -> String? {
+        guard range.length > 0, let fh = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? fh.close() }
+        let edge: UInt64 = 64 << 10
+        var md5 = Insecure.MD5()
+        for start in range.length > 2 * edge ? [range.offset, range.offset + range.length - edge] : [range.offset] {
+            guard (try? fh.seek(toOffset: start)) != nil else { return nil }
+            let d = fh.readData(ofLength: Int(min(range.length, range.length > 2 * edge ? edge : range.length)))
+            guard !d.isEmpty else { return nil }
+            md5.update(data: d)
+        }
+        return hex(Data(md5.finalize()))
     }
 }
 
@@ -77,7 +112,9 @@ struct FlacSource: AudioSource {
 
     func tags() -> Tags { TagIO.readFlacTags(url) }
 
-    var decodeFailureReason: String? {
+    var audioRange: (offset: UInt64, length: UInt64)? { TagIO.flacAudioRange(url) }
+
+    func decodeFailureReason(afconvertError: String) -> String? {
         // Apple's FLAC decoder only takes 16, 20 and 24-bit (macOS 26 still); say so plainly.
         guard let depth = info?.bitsPerSample, ![16, 20, 24].contains(depth) else { return nil }
         return "macOS can't decode \(depth)-bit FLAC — save it as 16 or 24-bit in an audio editor first"
@@ -115,6 +152,12 @@ final class WavSource: AudioSource {
     }
 
     func tags() -> Tags { layout.map { TagIO.readWavTags(url, $0) } ?? Tags() }
+
+    var audioRange: (offset: UInt64, length: UInt64)? {
+        guard let l = layout else { return nil }
+        let size = UInt64((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+        return (l.dataOffset, min(l.dataLength ?? size, size > l.dataOffset ? size - l.dataOffset : 0))
+    }
 
     func audioChecksum() -> Data? {
         if let checksum { return checksum }
@@ -182,6 +225,12 @@ struct AlacSource: AudioSource {
 
     func tags() -> Tags { TagIO.readITunesTags(url) }
 
-    // afconvert's own words for a cut-off or broken .m4a are a four-letter code ('wht?').
-    var decodeFailureReason: String? { "Couldn't read this ALAC file — it may still be downloading, or be damaged" }
+    var audioRange: (offset: UInt64, length: UInt64)? { TagIO.mp4MediaData(url) }
+
+    // afconvert's own words for a cut-off or broken .m4a are a four-letter code ('wht?'). Other
+    // failures (a full drive, say) aren't the file's fault, so afconvert's message stands.
+    func decodeFailureReason(afconvertError: String) -> String? {
+        guard info == nil || afconvertError.contains("input file") else { return nil }
+        return "Couldn't read this ALAC file — it may still be downloading, or be damaged"
+    }
 }

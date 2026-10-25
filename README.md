@@ -181,6 +181,7 @@ FLAC tags (Vorbis comments) are written as these ID3v2.3 frames:
 | `GENRE` | Genre | | `TRACKNUMBER` / `DISCNUMBER` | Track / disc (with totals) |
 | `COMPOSER` | Composer | | `COMMENT` | Comment |
 | `REMIXER` | Remixer | | `ISRC` | ISRC |
+| `GROUPING` | Grouping | | | |
 
 - Other tags are kept as custom `TXXX` fields. Non-Latin text is kept.
 - The year is taken from `DATE` in either order, so `2026-03-01` and `03.05.2026` both give 2026.
@@ -191,8 +192,9 @@ FLAC tags (Vorbis comments) are written as these ID3v2.3 frames:
 `LIST/INFO` chunk. Where both have a field, the ID3 tag is used.
 
 **ALAC** tags are the iTunes ones: title, artist, album, album artist, genre, composer, year,
-comment, copyright, track and disc numbers, BPM, cover art, and custom fields such as
-`INITIALKEY`. Gapless and volume data (`iTunSMPB`, `iTunNORM`) is player data and isn't copied.
+comment, copyright, grouping, compilation, track and disc numbers, BPM, cover art, and custom
+fields such as `INITIALKEY`. Genres that older iTunes versions stored as a number are written
+out as text. Gapless and volume data (`iTunSMPB`, `iTunNORM`) is player data and isn't copied.
 
 ## How it works
 
@@ -220,6 +222,9 @@ comment, copyright, track and disc numbers, BPM, cover art, and custom fields su
     Export them as 24-bit WAV.
 - **16, 20 and 24-bit FLAC only.** As of macOS 26, macOS decodes no other FLAC bit depth, so rare
   8, 12 or 32-bit FLACs fail with a message.
+- **AIFF files can't be larger than 4 GB.** The format stores its size in 32 bits. A file that
+  would be larger, for example a mix of more than about 2 hours at 24-bit / 96 kHz, is refused
+  before converting.
 - **Tags are checked only through Apple's reader.** rekordbox and Serato aren't tested
   automatically, although both read ID3v2.3.
 - **Changing the player doesn't redo existing files.** Delete the AIFFs first.
@@ -253,6 +258,12 @@ match the checksum the FLAC was made with, so the FLAC file is probably corrupt.
 **"Tag check failed: …".** A tag didn't read back as it was written, so the file wasn't saved.
 Please [open an issue](https://github.com/SudoShinichi/flactoaiff/issues) and include the source
 file's tags.
+
+**"The drive is full — there's no room for track.aiff".** Free some space on the drive, or choose
+another **Save to** folder.
+
+**"Too long for an AIFF file".** The track would be larger than 4 GB as AIFF, the most the format
+allows. Choose a player preset with a lower sample rate, or split the file.
 
 **"Output folder not available".** The **Save to** folder was renamed or deleted, or its drive
 isn't connected. Reconnect the drive or choose another folder. Watched files that failed for this

@@ -729,9 +729,10 @@ afconvert -f AIFF -d BEI16 "$TMP/tone.aiff" "$A45/t16.aiff"
 afconvert -f m4af -d alac "$A45/t16.aiff" "$A45/a16.m4a"
 afconvert -f m4af -d alac "$TMP/tone.aiff" "$A45/a24.m4a"
 afconvert -f m4af -d aac "$TMP/tone.aiff" "$A45/aac.m4a"
-# tag_m4a <src.m4a> <dst.m4a>: add iTunes tags, growing moov into the free atom afconvert leaves after it.
+# tag_m4a <src.m4a> <dst.m4a> [older]: add iTunes tags, growing moov into the free atom afconvert
+# leaves after it. "older" adds what older iTunes writes: gnre (a numbered genre), grouping, cpil.
 tag_m4a() {
-python3 -I - "$1" "$2" <<'PY'
+python3 -I - "$1" "$2" "${3:-}" <<'PY'
 import sys, struct
 d = bytearray(open(sys.argv[1], 'rb').read())
 def atom(t, body): return struct.pack('>I', 8 + len(body)) + t + body
@@ -743,6 +744,8 @@ items = (atom(c('nam'), data(1, b'Song Title')) + atom(c('ART'), data(1, b'Some 
          + atom(c('day'), data(1, b'2026-03-01'))
          + atom(b'----', atom(b'mean', b'\0\0\0\0com.apple.iTunes') + atom(b'name', b'\0\0\0\0INITIALKEY') + data(1, b'Am'))
          + atom(b'covr', data(13, bytes.fromhex('ffd8ffe000104a46494600010100000100010000ffd9'))))
+if sys.argv[3] == 'older':
+    items += atom(b'gnre', data(0, struct.pack('>H', 9))) + atom(c('grp'), data(1, b'Peak Time')) + atom(b'cpil', data(21, b'\x01'))
 def find(t, start, end):
     i = start
     while i + 8 <= end:
@@ -854,5 +857,108 @@ for bad in "--player original" "--player bogus" "--format cd"; do
     [ "$RC" -eq 2 ] || { echo "FAIL: --check $bad should exit 2, got $RC"; exit 1; }
 done
 hdiutil detach -quiet -force "$FAT" 2>/dev/null || true
+
+echo "48. Same file after a retag, old AIFFs, full drives, 4 GB, .aac on sticks, older iTunes and unsynced ID3 tags…"
+R48="$TMP/r48"; mkdir -p "$R48/a" "$R48/b" "$R48/c" "$R48/w"
+# An ALAC file whose tags outgrew their padding is the same file; different audio is not.
+cp "$A45/a24.m4a" "$R48/a/song.m4a"; cp "$A45/a24.m4a" "$R48/b/song.m4a"; cp "$A45/a16.m4a" "$R48/c/song.m4a"
+python3 -I -c "import struct, sys; open(sys.argv[1], 'ab').write(struct.pack('>I', 108) + b'free' + bytes(100))" "$R48/b/song.m4a"
+"$BIN" --convert "$R48/a/song.m4a" "$R48/out" >/dev/null
+[ "$("$BIN" --convert "$R48/b/song.m4a" "$R48/out")" = "SKIP $R48/out/song.aiff" ] || { echo "FAIL: a retagged ALAC file counted as a different file"; exit 1; }
+set +e; "$BIN" --convert "$R48/c/song.m4a" "$R48/out" >/dev/null 2>"$R48/err"; RC=$?; set -e
+[ "$RC" -eq 1 ] && grep -q "made from a different file" "$R48/err" || { echo "FAIL: different ALAC audio with the same name wasn't refused"; exit 1; }
+cp "$W44/in/LEI16.wav" "$R48/w/take.wav"
+"$BIN" --convert "$R48/w/take.wav" "$R48/wout" >/dev/null
+[ "$("$BIN" --convert "$R48/w/take.wav" "$R48/wout")" = "SKIP $R48/wout/take.aiff" ] || { echo "FAIL: the same WAV again should SKIP"; exit 1; }
+
+# AIFFs from before 2026-10-26 recorded an ALAC file's size and a WAV's full MD5: they still match.
+# set_source <aiff> <value>: rewrite the AIFF's FLACTOAIFF_SOURCE frame, as an older version wrote it.
+set_source() {
+python3 -I - "$1" "$2" <<'PY'
+import sys, struct
+path, value = sys.argv[1], sys.argv[2]
+d = open(path, 'rb').read(); i = 12
+while d[i:i+4] != b'ID3 ': i += 8 + struct.unpack('>I', d[i+4:i+8])[0]; i += i & 1
+n = struct.unpack('>I', d[i+4:i+8])[0]; tag = d[i+8:i+8+n]
+size = sum((b & 127) << (7 * (3 - k)) for k, b in enumerate(tag[6:10]))
+frames, j, out = tag[10:10+size], 0, b''
+while j + 10 <= len(frames) and frames[j] != 0:
+    fid, fn = frames[j:j+4], struct.unpack('>I', frames[j+4:j+8])[0]; body = frames[j+10:j+10+fn]
+    if fid == b'TXXX' and body[1:].startswith('﻿FLACTOAIFF_SOURCE'.encode('utf-16-le')):
+        body = b'\x01' + '﻿FLACTOAIFF_SOURCE'.encode('utf-16-le') + b'\0\0' + ('﻿' + value).encode('utf-16-le')
+    out += fid + struct.pack('>I', len(body)) + b'\0\0' + body; j += 10 + fn
+s = len(out); tag = b'ID3\x03\0\0' + bytes([s >> 21 & 127, s >> 14 & 127, s >> 7 & 127, s & 127]) + out
+chunk = b'ID3 ' + struct.pack('>I', len(tag)) + tag + (b'\0' if len(tag) & 1 else b'')
+d = d[:i] + chunk
+open(path, 'wb').write(d[:4] + struct.pack('>I', len(d) - 8) + d[8:])
+PY
+}
+set_source "$R48/out/song.aiff" "size:$(stat -f %z "$R48/a/song.m4a")"
+[ "$("$BIN" --convert "$R48/a/song.m4a" "$R48/out")" = "SKIP $R48/out/song.aiff" ] || { echo "FAIL: an older AIFF recording the ALAC's size didn't match"; exit 1; }
+WAVMD5="$(python3 -I -c "
+import sys, struct, hashlib
+d = open(sys.argv[1], 'rb').read(); i = 12
+while d[i:i+4] != b'data': i += 8 + struct.unpack('<I', d[i+4:i+8])[0]
+print(hashlib.md5(d[i+8:i+8+struct.unpack('<I', d[i+4:i+8])[0]]).hexdigest())" "$R48/w/take.wav")"
+set_source "$R48/wout/take.aiff" "md5:$WAVMD5"
+[ "$("$BIN" --convert "$R48/w/take.wav" "$R48/wout")" = "SKIP $R48/wout/take.aiff" ] || { echo "FAIL: an older AIFF recording the WAV's MD5 didn't match"; exit 1; }
+set_source "$R48/wout/take.aiff" "md5:00000000000000000000000000000000"
+set +e; "$BIN" --convert "$R48/w/take.wav" "$R48/wout" >/dev/null 2>"$R48/err"; RC=$?; set -e
+[ "$RC" -eq 1 ] && grep -q "made from a different file" "$R48/err" || { echo "FAIL: an older AIFF from another WAV wasn't refused"; exit 1; }
+
+# A full drive is named as the problem, not the ALAC file.
+say -o "$R48/long.aiff" --data-format=BEI24@44100 "$(printf 'a longer sentence to make a file of a few megabytes. %.0s' {1..12})"
+afconvert -f m4af -d alac "$R48/long.aiff" "$R48/long.m4a"
+hdiutil create -quiet -size 2m -fs MS-DOS -volname FTA_FULL "$R48/full.dmg"
+FULL="$R48/full"; mkdir "$FULL"; hdiutil attach -quiet -nobrowse -mountpoint "$FULL" "$R48/full.dmg"
+set +e; "$BIN" --convert "$R48/long.m4a" "$FULL" >/dev/null 2>"$R48/err"; RC=$?; set -e
+hdiutil detach -quiet -force "$FULL" 2>/dev/null || true
+[ "$RC" -eq 1 ] && grep -q "The drive is full — there's no room for long.aiff" "$R48/err" && ! grep -q "Couldn't read this ALAC" "$R48/err" \
+    || { echo "FAIL: a full drive wasn't reported as full:"; cat "$R48/err"; exit 1; }
+
+# Over 4 GB as AIFF: refused before converting.
+cp "$TMP/tone.flac" "$R48/huge.flac"
+python3 -I - "$R48/huge.flac" <<'PY'
+import sys
+d = bytearray(open(sys.argv[1], 'rb').read()); si = 8   # STREAMINFO body, after "fLaC" and its block header
+packed = int.from_bytes(d[si+10:si+18], 'big') & ~((1 << 36) - 1) | (1 << 34)   # 17 billion samples
+d[si+10:si+18] = packed.to_bytes(8, 'big'); open(sys.argv[1], 'wb').write(d)
+PY
+set +e; "$BIN" --convert "$R48/huge.flac" "$R48/hout" >/dev/null 2>"$R48/err"; RC=$?; set -e
+[ "$RC" -eq 1 ] && grep -q "Too long for an AIFF file: it would be .* GB, and AIFF files can't be larger than 4 GB" "$R48/err" \
+    && ! ls -A "$R48/hout" 2>/dev/null | grep -q . || { echo "FAIL: an over-4 GB AIFF wasn't refused up front:"; cat "$R48/err"; exit 1; }
+
+# The USB check counts .aac and .mp4 files as playable.
+mkdir -p "$R48/stick"; afconvert -f adts -d aac "$TMP/tone.aiff" "$R48/stick/a.aac"; afconvert -f mp4f -d aac "$TMP/tone.aiff" "$R48/stick/b.mp4"
+STICK48="$("$BIN" --check --player cdj-2000nxs "$R48/stick" 2>/dev/null || true)"   # exit 1: the folder is on APFS
+grep -q "^NOTE stick: All 2 tracks play" <<<"$STICK48" || { echo "FAIL: .aac/.mp4 not counted as playable: $STICK48"; exit 1; }
+
+# Older iTunes tags: a numbered genre, grouping and compilation.
+tag_m4a "$A45/a24.m4a" "$R48/older.m4a" older
+[ "$("$BIN" --convert "$R48/older.m4a" "$R48/tout")" = "OK $R48/tout/older.aiff${TAB}tags verified" ] || { echo "FAIL: older iTunes tags not verified"; exit 1; }
+python3 -I - "$R48/tout/older.aiff" <<'PY' || { echo "FAIL: gnre, grouping or compilation didn't carry over"; exit 1; }
+import sys
+d = open(sys.argv[1], 'rb').read(); u = lambda s: s.encode('utf-16-le')
+assert b'TCON' in d and u('Jazz') in d and b'TIT1' in d and u('Peak Time') in d and u('COMPILATION') in d
+PY
+
+# A WAV whose ID3v2.3 tag is unsynchronised keeps its tags and picture.
+python3 -I - "$W44/in/LEI24.wav" "$R48/unsync.wav" <<'PY'
+import sys, struct
+d = open(sys.argv[1], 'rb').read()
+jpg = bytes.fromhex('ffd8ffe000104a46494600010100000100010000ffd9')
+def frame(fid, body): return fid + struct.pack('>I', len(body)) + b'\0\0' + body
+fr = (frame(b'TIT2', b'\0Song Title') + frame(b'TPE1', b'\0Some Artist') + frame(b'TALB', b'\x01' + '﻿Album 蒸發'.encode('utf-16-le'))
+      + frame(b'APIC', b'\0image/jpeg\0\x03\0' + jpg))
+fr = fr.replace(b'\xff', b'\xff\x00')   # unsynchronise: a zero after every FF
+n = len(fr); tag = b'ID3\x03\x00\x80' + bytes([n >> 21 & 127, n >> 14 & 127, n >> 7 & 127, n & 127]) + fr
+chunk = b'id3 ' + struct.pack('<I', len(tag)) + tag + (b'\0' if len(tag) & 1 else b'')
+body = d[12:] + chunk
+open(sys.argv[2], 'wb').write(b'RIFF' + struct.pack('<I', 4 + len(body)) + b'WAVE' + body)
+PY
+[ "$("$BIN" --convert "$R48/unsync.wav" "$R48/uout")" = "OK $R48/uout/unsync.aiff${TAB}verified" ] || { echo "FAIL: unsynced-ID3 WAV not verified"; exit 1; }
+check_tags "$R48/uout/unsync.aiff" || { echo "FAIL: unsynced ID3 tags didn't carry over"; exit 1; }
+python3 -I -c "import sys; assert bytes.fromhex('ffd8ffe000104a46494600010100000100010000ffd9') in open(sys.argv[1], 'rb').read()" "$R48/uout/unsync.aiff" \
+    || { echo "FAIL: the unsynced picture wasn't restored"; exit 1; }
 
 echo "PASS: all checks."

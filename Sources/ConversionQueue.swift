@@ -8,10 +8,12 @@ final class ConversionQueue: ObservableObject {
     /// A watch folder can run for weeks: the window keeps the newest rows, not all of them.
     static let maxRows = 5000
     @Published private(set) var isWorking = false
+    /// Conversions are queued or running (a USB check alone doesn't count): quitting loses work.
+    @Published private(set) var isConverting = false
 
     private let settings: Settings
     private let worker = DispatchQueue(label: "local.flactoaiff.conversion", qos: .userInitiated)   // serial
-    private var batchesInFlight = 0   // main thread only
+    private var batchesInFlight = 0, conversionBatches = 0   // main thread only
     /// Watched FLACs still waiting to convert (main thread only): when each arrived, and how
     /// many of its jobs are queued (a file that changed after a hand-off is handed off again).
     /// Files that failed only because Save to was unavailable stay in here, to be tried again.
@@ -51,7 +53,9 @@ final class ConversionQueue: ObservableObject {
         let root = settings.outputFolder
         let options = settings.convertOptions
         batchesInFlight += 1
+        conversionBatches += 1
         isWorking = true
+        isConverting = true
         worker.async {
             for item in makeItems(root) {
                 let row = autoreleasepool { Jobs.run(item, outputRoot: root, options: options) }   // free each file's temporaries before the next
@@ -61,7 +65,11 @@ final class ConversionQueue: ObservableObject {
                 if quietSkips && row.kind == .alreadyConverted { continue }
                 DispatchQueue.main.async { self.append([row]) }
             }
-            DispatchQueue.main.async { self.batchFinished() }
+            DispatchQueue.main.async {
+                self.conversionBatches -= 1
+                if self.conversionBatches == 0 { self.isConverting = false }
+                self.batchFinished()
+            }
         }
     }
 

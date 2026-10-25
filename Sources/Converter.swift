@@ -129,15 +129,24 @@ enum Converter {
         let final = destDir.appendingPathComponent(base + ".aiff")
         if FileManager.default.fileExists(atPath: final.path) { return try existing(final, for: input) }
 
+        // The file's own header is exact; afinfo is the fallback, as it guesses 24-bit when unsure.
+        let streamInfo = input.info
+        let source = streamInfo.map { SourceFormat(depth: $0.bitsPerSample, rate: $0.rate) } ?? probe(input.url)
+        let format = outputFormat(for: source, mode: options.mode)
+        // AIFF stores its size in 32 bits: say so now rather than after most of the work.
+        if let info = streamInfo, info.samples > 0 {
+            let frames = Double(info.samples) * Double(format.rate ?? info.rate) / Double(info.rate)
+            let bytes = frames * Double(info.channels * format.depth / 8)
+            if bytes > Double(UInt32.max) - 1_000_000 {
+                throw ConvertError.saveFailed(String(format: "Too long for an AIFF file: it would be %.1f GB, and AIFF files can't be larger than 4 GB", bytes / 1e9))
+            }
+        }
+
         let createdDirs = try createDirectories(destDir)
         do {
             removeStalePartialsOnce(in: destDir)
             let tmp = try reserveTemp(in: destDir)
             do {
-                // The file's own header is exact; afinfo is the fallback, as it guesses 24-bit when unsure.
-                let streamInfo = input.info
-                let source = streamInfo.map { SourceFormat(depth: $0.bitsPerSample, rate: $0.rate) } ?? probe(input.url)
-                let format = outputFormat(for: source, mode: options.mode)
                 var args = ["-f", "AIFF"]
                 if let rate = format.rate {
                     args += ["-d", "BEI\(format.depth)@\(rate)", "-r", "127", "--src-complexity", "bats"]
@@ -147,7 +156,12 @@ enum Converter {
                 if format.dither { args += ["--dither", "1"] }   // TPDF
                 let (code, err) = run(afconvert, args + [input.url.path, tmp.path])
                 guard code == 0 else {
-                    if let reason = input.decodeFailureReason { throw ConvertError.afconvertFailed(reason) }
+                    // A full drive makes afconvert say "ExtAudioFileWrite failed (-40)".
+                    let free = (try? destDir.resourceValues(forKeys: [.volumeAvailableCapacityKey]))?.volumeAvailableCapacity
+                    if let free, free < 4 << 20 {
+                        throw ConvertError.saveFailed("The drive is full — there's no room for \(final.lastPathComponent). Free some space or choose another “Save to” folder")
+                    }
+                    if let reason = input.decodeFailureReason(afconvertError: err) { throw ConvertError.afconvertFailed(reason) }
                     throw ConvertError.afconvertFailed(err.isEmpty ? "afconvert exited with code \(code)" : err.trimmingCharacters(in: .whitespacesAndNewlines))
                 }
 
@@ -183,7 +197,7 @@ enum Converter {
     /// `final` exists already: this source's earlier conversion, or another file's that shares
     /// its name. An AIFF that records no source (an earlier version's) counts as this one's.
     private static func existing(_ final: URL, for input: AudioSource) throws -> Outcome {
-        if let recorded = TagIO.recordedSource(final), recorded != input.fingerprint {
+        if let recorded = TagIO.recordedSource(final), !input.isSource(of: recorded) {
             throw ConvertError.nameTaken(final.lastPathComponent)
         }
         return .alreadyConverted(final)
