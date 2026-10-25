@@ -5,6 +5,8 @@ import Foundation
 /// and rows publish as they finish.
 final class ConversionQueue: ObservableObject {
     @Published private(set) var rows: [Row] = []
+    /// A watch folder can run for weeks: the window keeps the newest rows, not all of them.
+    static let maxRows = 5000
     @Published private(set) var isWorking = false
 
     private let settings: Settings
@@ -57,7 +59,10 @@ final class ConversionQueue: ObservableObject {
                     DispatchQueue.main.async { if session == self.watchSession { self.finishedWatched(job.source) } }
                 }
                 if quietSkips && row.kind == .alreadyConverted { continue }
-                DispatchQueue.main.async { self.rows.append(row) }
+                DispatchQueue.main.async {
+                    self.rows.append(row)
+                    if self.rows.count > Self.maxRows { self.rows.removeFirst(self.rows.count - Self.maxRows) }
+                }
             }
             DispatchQueue.main.async {
                 self.batchesInFlight -= 1

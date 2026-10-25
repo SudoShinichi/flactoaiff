@@ -172,9 +172,10 @@ enum TagIO {
         }
 
         for (key, id) in textFrames { text(id, tags.value(key)) }
-        // v2.3 TYER holds a bare 4-digit year; DATE is often "2026-03-01".
-        if let date = tags.value("DATE") ?? tags.value("YEAR") {
-            text("TYER", String(date.prefix(4)))
+        // v2.3 TYER holds a bare 4-digit year; DATE is often "2026-03-01", or "03.05.2026".
+        if let date = tags.value("DATE") ?? tags.value("YEAR"),
+           let year = date.range(of: "[0-9]{4}", options: .regularExpression) {
+            text("TYER", String(date[year]))
         }
         text("TRCK", numberWithTotal(tags.value("TRACKNUMBER"),
                                      tags.value("TRACKTOTAL") ?? tags.value("TOTALTRACKS")))
@@ -188,7 +189,12 @@ enum TagIO {
             written.insert("TXXX:" + key)
             frames.append(.userText(description: key, value: value))
         }
-        frames += tags.pictures.map { .picture($0) }
+        // Players that show one picture take the first, so the front cover leads and file icons
+        // trail. A URL picture (MIME "-->") holds a link, not an image: no player shows it.
+        func rank(_ p: Picture) -> Int { p.type == 3 ? 0 : p.type == 1 || p.type == 2 ? 2 : 1 }
+        let pictures = tags.pictures.enumerated().filter { $0.element.mime != "-->" }
+            .sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }
+        frames += pictures.map { .picture($0.element) }
         return frames
     }
 
