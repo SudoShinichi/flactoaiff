@@ -8,7 +8,7 @@
 file against the FLAC before saving it.**
 
 ![macOS 12+](https://img.shields.io/badge/macOS-12%2B-black?logo=apple)
-![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-arm64-black)
+![Apple Silicon and Intel](https://img.shields.io/badge/Apple%20Silicon%20%2B%20Intel-universal-black)
 ![Swift](https://img.shields.io/badge/Swift-SwiftUI-F05138?logo=swift&logoColor=white)
 ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
@@ -62,7 +62,8 @@ cd flactoaiff
 
 Then drag `build/FlacToAiff.app` into `/Applications`.
 
-**Requirements:** macOS 12 Monterey or later, on Apple Silicon.
+**Requirements:** macOS 12 Monterey or later, on Apple Silicon or Intel. The app is a universal
+binary.
 
 ## Usage
 
@@ -163,7 +164,7 @@ is preserved.
 
 ## Limitations
 
-- **Apple Silicon only, and you build it yourself.** There's no signed or notarized release.
+- **You build it yourself.** There's no signed or notarized release.
 - **FLAC input only.** WAV, ALAC and other formats are skipped.
 - **16, 20 and 24-bit FLAC only.** macOS's FLAC decoder handles nothing else, so rare 8, 12
   or 32-bit FLACs fail with a clear message. Save them as 16 or 24-bit in an audio editor first.
@@ -212,6 +213,7 @@ permission goes to FlacToAiff itself.
 
 ```bash
 ./build.sh && ./test.sh
+arch -x86_64 ./test.sh          # the same checks on the Intel build, under Rosetta
 ```
 
 `test.sh` rebuilds the app if the sources changed, then runs end-to-end checks on real FLAC files that it generates itself. It covers:

@@ -14,8 +14,12 @@ trap 'rm -rf "$TMP"' EXIT
 
 # Failure paths real files can't reach are driven by FLACTOAIFF_TEST_DAMAGE, which only a
 # binary compiled with -D TEST_HOOKS reads; the app itself never does (check 35).
+# It is built for the architecture this run uses, so "arch -x86_64 ./test.sh" tests Intel throughout.
 HOOKBIN="$TMP/FlacToAiff-testhooks"
-swiftc -O -target arm64-apple-macos12.0 -D TEST_HOOKS -o "$HOOKBIN" Sources/*.swift -framework AppKit -framework SwiftUI
+MINOS="$(/usr/libexec/PlistBuddy -c 'Print LSMinimumSystemVersion' build/FlacToAiff.app/Contents/Info.plist)"
+swiftc -O -target "$(uname -m)-apple-macos$MINOS" -D TEST_HOOKS -o "$HOOKBIN" Sources/*.swift -framework AppKit -framework SwiftUI
+
+echo "Testing the $(uname -m) build."
 
 echo "1. Synthesize 24-bit source and encode to FLAC…"
 say -o "$TMP/tone.aiff" --data-format=BEI24@44100 "test tone for flac conversion"
