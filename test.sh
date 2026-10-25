@@ -782,4 +782,35 @@ set +e; "$BIN" --convert "$A45/short.m4a" "$A45/sout" >/dev/null 2>"$A45/err"; R
 [ "$RC" -eq 1 ] && grep -q "Couldn't read this ALAC file" "$A45/err" && ! ls -A "$A45/sout" 2>/dev/null | grep -q . \
     || { echo "FAIL: cut-off ALAC not refused clearly:"; cat "$A45/err"; exit 1; }
 
+echo "46. Player presets: rates capped per player; --skip-playable leaves playable files alone…"
+P46="$TMP/p46"; mkdir -p "$P46/in"
+afconvert -f AIFF -d BEI24@192000 "$TMP/hr96.aiff" "$P46/hr192.aiff"
+afconvert -f AIFF -d BEI24@176400 "$TMP/hr88.aiff" "$P46/hr176.aiff"
+for f in hr192 hr176; do afconvert -f flac -d flac "$P46/$f.aiff" "$P46/in/$f.flac"; done
+cp "$TMP/hr96.flac" "$TMP/t16.flac" "$P46/in/"
+"$BIN" --convert --player cdj-3000 "$P46/in" "$P46/c3" >/dev/null
+fmt "$P46/c3/in/hr192.aiff" | grep -q "96000 Hz.*24-bit" && fmt "$P46/c3/in/hr176.aiff" | grep -q "88200 Hz.*24-bit" \
+    && fmt "$P46/c3/in/hr96.aiff" | grep -q "96000 Hz.*24-bit" && fmt "$P46/c3/in/t16.aiff" | grep -q "44100 Hz.*16-bit" \
+    || { echo "FAIL: CDJ-3000 preset: 192 → 96, 176.4 → 88.2, 96 and 44.1 kept"; for f in "$P46"/c3/in/*.aiff; do fmt "$f"; done; exit 1; }
+"$BIN" --convert --player cdj-2000nxs "$P46/in/hr192.flac" "$P46/n" >/dev/null
+fmt "$P46/n/hr192.aiff" | grep -q "48000 Hz.*24-bit" || { echo "FAIL: CDJ-2000NXS preset: 192 kHz not → 48 kHz"; exit 1; }
+[ "$("$BIN" --convert --format max96 "$P46/in/hr96.flac" "$P46/m96")" = "OK $P46/m96/hr96.aiff${TAB}verified" ] || { echo "FAIL: max96 kept 96 kHz losslessly"; exit 1; }
+
+# --skip-playable: the CDJ-3000 plays 44.1 and 96 kHz FLAC as is, not 192 kHz.
+OUT46="$("$BIN" --convert --player cdj-3000 --skip-playable "$P46/in" "$P46/skip")"
+grep -q "^KEEP hr96.flac${TAB}Plays as is on the CDJ-3000 / CDJ-3000X" <<<"$OUT46" && grep -q "^KEEP t16.flac" <<<"$OUT46" \
+    && grep -q "^OK $P46/skip/in/hr192.aiff" <<<"$OUT46" && [ ! -e "$P46/skip/in/hr96.aiff" ] \
+    || { echo "FAIL: --skip-playable on the CDJ-3000:"; echo "$OUT46"; exit 1; }
+# The CDJ-2000NXS plays WAV but not FLAC; the XDJ-RX3 plays FLAC but not ALAC.
+afconvert -f WAVE -d LEI16 "$TMP/t16.aiff" "$P46/t16.wav"
+afconvert -f m4af -d alac "$TMP/t16.aiff" "$P46/t16.m4a"
+[ "$("$BIN" --convert --player cdj-2000nxs --skip-playable "$P46/t16.wav" "$P46/x")" = "KEEP t16.wav${TAB}Plays as is on the CDJ-2000NXS / CDJ-900NXS / XDJ-1000 / XDJ-700 — not converted" ] \
+    || { echo "FAIL: 16-bit WAV not left alone for the CDJ-2000NXS"; exit 1; }
+"$BIN" --convert --player cdj-2000nxs --skip-playable "$P46/in/t16.flac" "$P46/x" | grep -q "^OK " || { echo "FAIL: FLAC not converted for the CDJ-2000NXS"; exit 1; }
+"$BIN" --convert --player xdj-rx3 --skip-playable "$P46/t16.m4a" "$P46/y" | grep -q "^OK " || { echo "FAIL: ALAC not converted for the XDJ-RX3"; exit 1; }
+for bad in "--player bogus" "--player cd --skip-playable"; do
+    set +e; "$BIN" --convert $bad "$P46/t16.wav" "$P46/x" 2>/dev/null; RC=$?; set -e
+    [ "$RC" -eq 2 ] || { echo "FAIL: '$bad' should exit 2, got $RC"; exit 1; }
+done
+
 echo "PASS: all checks."

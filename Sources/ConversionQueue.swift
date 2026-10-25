@@ -49,7 +49,7 @@ final class ConversionQueue: ObservableObject {
 
     private func submit(quietSkips: Bool = false, watchSession session: Int? = nil, _ makeItems: @escaping (URL) -> [WorkItem]) {
         let root = settings.outputFolder
-        let options = ConvertOptions(mode: settings.mode)
+        let options = settings.convertOptions
         batchesInFlight += 1
         isWorking = true
         worker.async {
