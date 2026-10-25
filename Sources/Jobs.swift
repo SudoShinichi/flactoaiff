@@ -1,6 +1,6 @@
 import Foundation
 
-/// One FLAC to convert, and the folder its AIFF goes into.
+/// One audio file to convert, and the folder its AIFF goes into.
 struct Job {
     let source: URL
     let destDir: URL
@@ -49,11 +49,11 @@ enum Jobs {
             }
 
             let folderOut = outputRoot.appendingPathComponent(folderNames.name(for: url), isDirectory: true)
-            let flacs = flacs(in: url)
-            if flacs.isEmpty {
+            let files = audioFiles(in: url)
+            if files.isEmpty {
                 items.append(.note(name: url.lastPathComponent, message: "No .flac files found"))
             }
-            for rel in flacs {
+            for rel in files {
                 let subdir = (rel as NSString).deletingLastPathComponent
                 let dest = subdir.isEmpty ? folderOut : folderOut.appendingPathComponent(subdir, isDirectory: true)
                 items.append(.job(Job(source: url.appendingPathComponent(rel), destDir: dest)))
@@ -62,16 +62,16 @@ enum Jobs {
         return items
     }
 
-    /// FLACs anywhere under `folder`, as sorted paths relative to it. Hidden files
-    /// (incl. AppleDouble `._x.flac`) and package contents are skipped; symlinked FLACs count.
+    /// Files of any input format anywhere under `folder`, as sorted paths relative to it. Hidden
+    /// files (incl. AppleDouble `._x.flac`) and package contents are skipped; symlinks count.
     /// Once `isCancelled` returns true, the walk stops and returns what it found so far.
-    static func flacs(in folder: URL, isCancelled: () -> Bool = { false }) -> [String] {
+    static func audioFiles(in folder: URL, isCancelled: () -> Bool = { false }) -> [String] {
         guard let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey],
                                                           options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return [] }
         let rootDepth = folder.standardizedFileURL.pathComponents.count
         var found: [String] = []
         while let file = walker.nextObject() as? URL, !isCancelled() {
-            guard file.pathExtension.lowercased() == "flac",
+            guard AudioSources.handles(file),
                   (try? file.resolvingSymlinksInPath().resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
             else { continue }
             found.append(file.standardizedFileURL.pathComponents.dropFirst(rootDepth).joined(separator: "/"))
@@ -125,8 +125,11 @@ enum Jobs {
             let unavailable = Row(name: name, kind: .failed, detail: ConvertError.outputFolderUnavailable.description,
                                   output: nil, checks: nil, retryable: true)
             guard outputRootAvailable() else { return unavailable }
+            guard let source = AudioSources.open(job.source) else {
+                return Row(name: name, kind: .skipped, detail: "Skipped — not a .flac file", output: nil, checks: nil)
+            }
             do {
-                switch try Converter.convert(flacURL: job.source, destDir: job.destDir, options: options) {
+                switch try Converter.convert(source, destDir: job.destDir, options: options) {
                 case .converted(let out, let note, let checks):
                     return Row(name: name, kind: .converted,
                                detail: "→ \(out.lastPathComponent)" + (note.map { " (\($0))" } ?? "") + " · \(checks.label)",
@@ -134,8 +137,6 @@ enum Jobs {
                 case .alreadyConverted(let out):
                     return Row(name: name, kind: .alreadyConverted, detail: "Already converted", output: out, checks: nil)
                 }
-            } catch ConvertError.notFlac {
-                return Row(name: name, kind: .skipped, detail: ConvertError.notFlac.description, output: nil, checks: nil)
             } catch {
                 // A drive pulled mid-conversion fails in all sorts of ways; the cause is what matters.
                 if !outputRootAvailable() { return unavailable }

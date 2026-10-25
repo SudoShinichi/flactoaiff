@@ -158,7 +158,11 @@ enum TagIO {
         "DATE", "YEAR", "TRACKNUMBER", "TRACKTOTAL", "TOTALTRACKS",
         "DISCNUMBER", "DISCTOTAL", "TOTALDISCS", "COMMENT", "DESCRIPTION",
         "WAVEFORMATEXTENSIBLE_CHANNEL_MASK",   // afconvert's own bookkeeping, not a tag
+        sourceKey,   // written by the converter itself, once
     ])
+
+    /// TXXX description recording which file an AIFF was made from (`AudioSource.fingerprint`).
+    static let sourceKey = "FLACTOAIFF_SOURCE"
 
     /// The ID3v2.3 frames to write for `tags`, in file order.
     static func id3Frames(_ tags: Tags) -> [ID3Frame] {
@@ -280,6 +284,37 @@ enum TagIO {
         guard let c = comm, let s = sound else { return nil }
         return AIFFInfo(channels: c.channels, frames: c.frames, bitsPerSample: c.bits, rate: c.rate,
                         soundDataOffset: s.offset, soundDataLength: s.length)
+    }
+
+    /// The source fingerprint an AIFF's ID3 chunk records, or nil when it records none (an
+    /// earlier version's or another app's AIFF). Reads the v2.3 TXXX frames this app writes.
+    static func recordedSource(_ url: URL) -> String? {
+        guard let fh = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? fh.close() }
+        guard fh.readData(ofLength: 12).prefix(4) == Data("FORM".utf8) else { return nil }
+        var tag: Data?
+        while tag == nil {
+            let header = fh.readData(ofLength: 8)
+            guard header.count == 8 else { return nil }
+            let size = header[(header.startIndex + 4)...].reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
+            let start = fh.offsetInFile
+            if header.prefix(4) == Data("ID3 ".utf8) { tag = fh.readData(ofLength: Int(size)) }
+            guard (try? fh.seek(toOffset: start + size + size % 2)) != nil else { break }
+        }
+        guard let tag, tag.count >= 10, tag.prefix(3) == Data("ID3".utf8), tag[tag.startIndex + 3] == 3 else { return nil }
+        var r = Reader(tag)
+        _ = r.skip(10)
+        while let id = r.bytes(4), id.first != 0, let size = r.u32be(), r.skip(2), let body = r.bytes(Int(size)) {
+            guard id == Data("TXXX".utf8), body.first == 1 else { continue }
+            // UTF-16 description, a two-byte NUL, then the UTF-16 value.
+            let text = body.dropFirst()
+            var end = text.startIndex
+            while end + 1 < text.endIndex, text[end] != 0 || text[end + 1] != 0 { end += 2 }
+            guard end + 1 < text.endIndex,
+                  String(data: text[text.startIndex..<end], encoding: .utf16) == sourceKey else { continue }
+            return String(data: text[(end + 2)...], encoding: .utf16)
+        }
+        return nil
     }
 
     // MARK: - AIFF writing

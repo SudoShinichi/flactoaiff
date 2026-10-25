@@ -609,4 +609,25 @@ PY
 EXPECT42="$(printf '2026\nAPIC 3\nAPIC 4\nAPIC 1')"
 [ "$FRAMES42" = "$EXPECT42" ] || { echo "FAIL: expected year 2026 and pictures 3, 4, 1 without the URL picture, got:"; echo "$FRAMES42"; exit 1; }
 
+echo "43. 'Already converted' only when the AIFF came from the same file; another file with that name fails…"
+C43="$TMP/c43"
+mkdir -p "$C43/A" "$C43/B" "$C43/C" "$C43/old"
+cp "$TMP/tone.flac" "$C43/A/track.flac"
+cp "$TMP/hr96.flac" "$C43/B/track.flac"    # different audio, same name
+cp "$TMP/nomd5.flac" "$C43/C/track.flac"   # no audio checksum: told apart by size
+"$BIN" --convert "$C43/A/track.flac" "$C43/out" >/dev/null
+SUM43="$(md5 -q "$C43/out/track.aiff")"
+[ "$("$BIN" --convert "$C43/A/track.flac" "$C43/out")" = "SKIP $C43/out/track.aiff" ] || { echo "FAIL: the same FLAC again should SKIP"; exit 1; }
+for other in B C; do
+    set +e; "$BIN" --convert "$C43/$other/track.flac" "$C43/out" >/dev/null 2>"$C43/err"; RC=$?; set -e
+    [ "$RC" -eq 1 ] && grep -q "track.aiff already exists, made from a different file" "$C43/err" \
+        || { echo "FAIL: a different FLAC ($other) with the same name wasn't refused:"; cat "$C43/err"; exit 1; }
+done
+[ "$(md5 -q "$C43/out/track.aiff")" = "$SUM43" ] || { echo "FAIL: the existing AIFF was changed"; exit 1; }
+"$BIN" --convert "$C43/C/track.flac" "$C43/outC" >/dev/null
+[ "$("$BIN" --convert "$C43/C/track.flac" "$C43/outC")" = "SKIP $C43/outC/track.aiff" ] || { echo "FAIL: the same FLAC without a checksum should SKIP"; exit 1; }
+# An AIFF from an earlier version (or another app) records no source: "Already converted", as before.
+afconvert -f AIFF -d BEI16 "$TMP/tone.aiff" "$C43/old/track.aiff"
+[ "$("$BIN" --convert "$C43/B/track.flac" "$C43/old")" = "SKIP $C43/old/track.aiff" ] || { echo "FAIL: an AIFF without a recorded source should SKIP"; exit 1; }
+
 echo "PASS: all checks."

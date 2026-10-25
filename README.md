@@ -106,7 +106,7 @@ Every file gets a row in the window. The label at the end says what was checked:
 | `verified` | The audio is bit-for-bit identical to the FLAC (checked against its MD5), and format, length and tags were checked. |
 | `tags verified` | Format, length and tags were checked. The audio was resampled or dithered, so it can't be identical, or the FLAC carries no checksum. |
 | `format checked` | Format and length were checked. There were no tags, and the audio couldn't be compared (resampled, or no checksum in the FLAC). |
-| Already converted | An AIFF with that name already exists in the output folder. It is left untouched. |
+| Already converted | This file's AIFF already exists in the output folder. It is left untouched. |
 | Red row | Nothing was saved. The row says why (see [Troubleshooting](#troubleshooting)). |
 
 To convert a track again, for example in a different format, delete its AIFF and add the FLAC
@@ -170,8 +170,9 @@ custom `TXXX` fields. Non-Latin text is preserved.
 - **FLAC input only.** WAV, ALAC and other formats are skipped.
 - **16, 20 and 24-bit FLAC only.** macOS's FLAC decoder handles nothing else, so rare 8, 12
   or 32-bit FLACs fail with a clear message. Save them as 16 or 24-bit in an audio editor first.
-- **Duplicates are detected by file name.** If `track.aiff` already exists in the output folder,
-  a different FLAC named `track.flac` is reported as "Already converted".
+- **AIFFs from earlier versions don't record their source.** If such a `track.aiff` exists, any
+  FLAC named `track.flac` is reported as "Already converted". AIFFs made from now on record which
+  file they came from.
 - **Changing the format doesn't redo existing files.** Delete the AIFFs first.
 - **Tags are checked only through Apple's reader.** Nothing tests them in rekordbox or Serato
   automatically, although both read ID3v2.3.
@@ -186,6 +187,10 @@ or download it again.
 
 **"macOS can't decode 32-bit FLAC"** (or 8 or 12-bit). macOS only decodes 16, 20 and 24-bit
 FLAC. Save the file as 16 or 24-bit in an audio editor, then add it again.
+
+**"track.aiff already exists, made from a different file".** Two different files share a name,
+for example `A/track.flac` and `B/track.flac` dropped into the same **Save to** folder. Nothing was
+saved and the existing AIFF is untouched. Rename one of the files and add it again.
 
 **"Audio doesn't match the FLAC's checksum — the FLAC may be damaged".** The decoded audio
 doesn't match the checksum the FLAC was encoded with, so the FLAC file itself is probably
@@ -247,6 +252,7 @@ FlacToAiff.app/Contents/MacOS/FlacToAiff --watch   [--format original|max48|cd] 
 | `Sources/Converter.swift` | Output-format choice, `afconvert`, atomic publishing |
 | `Sources/Tags.swift` | FLAC STREAMINFO/tag/picture parsing, ID3 writing, AIFF reading |
 | `Sources/Verifier.swift` | Length, format, audio checksum and tag checks |
+| `Sources/AudioSource.swift` | Input formats: one type per format (FLAC today) |
 | `Sources/Jobs.swift` | Expands dropped files and folders into conversions |
 | `Sources/FolderWatcher.swift` | Watch folder (FSEvents) and launch catch-up |
 | `Sources/ConversionQueue.swift` | Background queue shared by all inputs |
