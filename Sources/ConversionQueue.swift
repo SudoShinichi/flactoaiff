@@ -59,16 +59,30 @@ final class ConversionQueue: ObservableObject {
                     DispatchQueue.main.async { if session == self.watchSession { self.finishedWatched(job.source) } }
                 }
                 if quietSkips && row.kind == .alreadyConverted { continue }
-                DispatchQueue.main.async {
-                    self.rows.append(row)
-                    if self.rows.count > Self.maxRows { self.rows.removeFirst(self.rows.count - Self.maxRows) }
-                }
+                DispatchQueue.main.async { self.append([row]) }
             }
-            DispatchQueue.main.async {
-                self.batchesInFlight -= 1
-                if self.batchesInFlight == 0 { self.isWorking = false }
-            }
+            DispatchQueue.main.async { self.batchFinished() }
         }
+    }
+
+    /// Check a stick (or folder) for tracks `player` won't play. Read-only; queued like a drop.
+    func check(_ folder: URL, for player: Player) {
+        batchesInFlight += 1
+        isWorking = true
+        worker.async {
+            let rows = USBCheck.run(folder, on: player)
+            DispatchQueue.main.async { self.append(rows); self.batchFinished() }
+        }
+    }
+
+    private func append(_ new: [Row]) {
+        rows += new
+        if rows.count > Self.maxRows { rows.removeFirst(rows.count - Self.maxRows) }
+    }
+
+    private func batchFinished() {
+        batchesInFlight -= 1
+        if batchesInFlight == 0 { isWorking = false }
     }
 
     private func finishedWatched(_ file: URL) {

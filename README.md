@@ -141,6 +141,18 @@ unzipped or moved into the folder, and their subfolders are kept: `Watch/Album/0
   example editing its tags in a tag editor, makes it count as new.
 - If the folder's drive isn't connected, watching starts as soon as it is.
 
+### USB check
+
+With a DJ player chosen, **Check USB Stick…** lists the tracks on a stick that the player won't
+play, and why: a format it doesn't take (FLAC on a CDJ-2000NXS), a sample rate above its limit,
+32-bit audio, floating-point WAV, or a format such as OGG. It also says when the stick is formatted
+in a way the player can't read: APFS and NTFS sticks don't work on any of these players, and exFAT
+only on some. The last row sums up how many tracks will play.
+
+The check only reads the stick. It doesn't fix tracks there, because replacing files on the stick
+breaks its rekordbox export. Convert the original files with the player chosen, then put them on
+the stick again with rekordbox. **Reveal in Finder** selects the tracks that won't play.
+
 ### Tags
 
 FLAC tags (Vorbis comments) are mapped to ID3v2.3 frames:
@@ -271,6 +283,7 @@ A headless command-line mode is available for scripting:
 ```bash
 FlacToAiff.app/Contents/MacOS/FlacToAiff --convert [<format>] <file-or-folder>... <output-dir>
 FlacToAiff.app/Contents/MacOS/FlacToAiff --watch   [<format>] <watch-dir> <output-dir>
+FlacToAiff.app/Contents/MacOS/FlacToAiff --check   --player <name> <folder>
 # <format>: --format original|max96|max48|cd
 #           --player cdj-3000|cdj-2000nxs2|opus-quad|xdj-1000mk2|xdj-rx3|cdj-2000nxs|original|cd [--skip-playable]
 ```
@@ -279,6 +292,8 @@ FlacToAiff.app/Contents/MacOS/FlacToAiff --watch   [<format>] <watch-dir> <outpu
 - A converted file prints `OK <path>`, a tab, and its label.
 - An existing file prints `SKIP <path>`.
 - A file left alone with `--skip-playable` prints `KEEP <name>`, a tab, and the reason.
+- `--check` prints `ERROR <path>: <reason>` for each track that won't play and a `NOTE` summary,
+  and exits 1 when any track or the stick itself won't work.
 - A failure prints `ERROR <name>: <reason>` to stderr, and the exit status is 1.
 
 | File | Purpose |
@@ -287,6 +302,7 @@ FlacToAiff.app/Contents/MacOS/FlacToAiff --watch   [<format>] <watch-dir> <outpu
 | `Sources/Converter.swift` | Output-format choice, `afconvert`, atomic publishing |
 | `Sources/Tags.swift` | FLAC and WAV header and tag parsing, iTunes tags, ID3 reading and writing, AIFF reading |
 | `Sources/Verifier.swift` | Length, format, audio checksum and tag checks |
+| `Sources/USBCheck.swift` | The USB check: which tracks a player won't play (read-only) |
 | `Sources/Players.swift` | The Player menu: each player's limits, with their sources |
 | `Sources/AudioSource.swift` | Input formats: one type per format (FLAC, WAV, ALAC) |
 | `Sources/Jobs.swift` | Expands dropped files and folders into conversions |

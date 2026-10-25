@@ -813,4 +813,46 @@ for bad in "--player bogus" "--player cd --skip-playable"; do
     [ "$RC" -eq 2 ] || { echo "FAIL: '$bad' should exit 2, got $RC"; exit 1; }
 done
 
+echo "47. USB check: lists the tracks a player won't play and sticks it can't read; changes nothing…"
+U47="$TMP/u47"; mkdir -p "$U47/one"
+hdiutil create -quiet -size 40m -fs MS-DOS -volname FTA_FAT "$U47/fat.dmg"
+FAT="$U47/fat"; mkdir "$FAT"
+hdiutil attach -quiet -nobrowse -mountpoint "$FAT" "$U47/fat.dmg"
+trap 'kill $WATCHER 2>/dev/null || true; hdiutil detach -quiet -force "$FAT" 2>/dev/null || true; hdiutil detach -quiet -force "$EXFAT" 2>/dev/null || true; rm -rf "$TMP"' EXIT
+T47="$FAT/Contents/Artist"; mkdir -p "$T47" "$FAT/PIONEER"
+cp "$TMP/t16.flac" "$T47/a16.flac"; cp "$TMP/hr96.flac" "$T47/hr96.flac"; cp "$P46/in/hr192.flac" "$T47/hr192.flac"
+cp "$P46/t16.wav" "$T47/w16.wav"; cp "$W44/float.wav" "$T47/float.wav"
+cp "$A45/a16.m4a" "$T47/alac.m4a"; cp "$A45/aac.m4a" "$T47/aac.m4a"; cp "$TMP/hr96.aiff" "$T47/hr96.aiff"
+echo x > "$T47/x.ogg"; echo x > "$FAT/PIONEER/export.pdb"; echo x > "$T47/cover.jpg"
+BEFORE47="$(cd "$FAT" && find . -type f -exec md5 -r {} + | sort)"
+set +e; "$BIN" --check --player cdj-2000nxs "$FAT" >"$U47/nxs.out" 2>"$U47/nxs.err"; RC=$?; set -e
+NXS="CDJ-2000NXS / CDJ-900NXS / XDJ-1000 / XDJ-700"
+[ "$RC" -eq 1 ] \
+    && grep -qF "ERROR Contents/Artist/a16.flac: FLAC — the $NXS doesn't play FLAC" "$U47/nxs.err" \
+    && grep -qF "ERROR Contents/Artist/hr96.aiff: 96 kHz — the $NXS plays 44.1 kHz and 48 kHz" "$U47/nxs.err" \
+    && grep -qF "ERROR Contents/Artist/float.wav: Floating-point or compressed WAV" "$U47/nxs.err" \
+    && grep -qF "ERROR Contents/Artist/alac.m4a: ALAC — the $NXS doesn't play ALAC" "$U47/nxs.err" \
+    && grep -qF "ERROR Contents/Artist/x.ogg: OGG — the $NXS doesn't play this format" "$U47/nxs.err" \
+    && ! grep -q "w16.wav\|aac.m4a\|cover.jpg\|PIONEER" "$U47/nxs.err" \
+    && grep -qF "NOTE fat: 2 of 9 tracks play on the $NXS." "$U47/nxs.out" \
+    || { echo "FAIL: USB check for the CDJ-2000NXS (exit $RC):"; cat "$U47/nxs.out" "$U47/nxs.err"; exit 1; }
+set +e; "$BIN" --check --player cdj-3000 "$FAT" >"$U47/c3.out" 2>"$U47/c3.err"; RC=$?; set -e
+[ "$RC" -eq 1 ] && [ "$(wc -l < "$U47/c3.err" | tr -d ' ')" = 3 ] \
+    && grep -qF "ERROR Contents/Artist/hr192.flac: 192 kHz — the CDJ-3000 / CDJ-3000X plays 44.1 kHz, 48 kHz, 88.2 kHz and 96 kHz" "$U47/c3.err" \
+    && grep -qF "NOTE fat: 6 of 9 tracks play on the CDJ-3000 / CDJ-3000X." "$U47/c3.out" \
+    || { echo "FAIL: USB check for the CDJ-3000 (exit $RC):"; cat "$U47/c3.out" "$U47/c3.err"; exit 1; }
+[ "$(cd "$FAT" && find . -type f -exec md5 -r {} + | sort)" = "$BEFORE47" ] || { echo "FAIL: the USB check changed the stick"; exit 1; }
+# Everything plays: exit 0. An APFS folder can't be read by any player; exFAT gets a note.
+cp "$P46/t16.wav" "$U47/one/"
+mkdir -p "$FAT/one"; cp "$P46/t16.wav" "$FAT/one/"
+[ "$("$BIN" --check --player cdj-3000 "$FAT/one")" = "NOTE one: The track plays on the CDJ-3000 / CDJ-3000X" ] || { echo "FAIL: a playable stick should pass"; exit 1; }
+set +e; "$BIN" --check --player cdj-3000 "$U47/one" >/dev/null 2>"$U47/apfs.err"; RC=$?; set -e
+[ "$RC" -eq 1 ] && grep -q "ERROR one: Formatted as APFS, which DJ players can't read" "$U47/apfs.err" || { echo "FAIL: APFS not reported"; cat "$U47/apfs.err"; exit 1; }
+"$BIN" --check --player cdj-3000 "$EXFAT" | grep -q "^NOTE exfat: Formatted as exFAT" || { echo "FAIL: exFAT note missing"; exit 1; }
+for bad in "--player original" "--player bogus" "--format cd"; do
+    set +e; "$BIN" --check $bad "$FAT" >/dev/null 2>&1; RC=$?; set -e
+    [ "$RC" -eq 2 ] || { echo "FAIL: --check $bad should exit 2, got $RC"; exit 1; }
+done
+hdiutil detach -quiet -force "$FAT" 2>/dev/null || true
+
 echo "PASS: all checks."
