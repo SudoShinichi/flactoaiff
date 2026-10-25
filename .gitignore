@@ -6,3 +6,7 @@ build/
 
 # Local Claude Code settings
 .claude/settings.local.json
+
+# Local notes and exports, not part of the project
+*.pdf
+.superpowers/
