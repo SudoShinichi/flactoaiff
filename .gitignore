@@ -10,3 +10,6 @@ build/
 # Local notes and exports, not part of the project
 *.pdf
 .superpowers/
+
+# Local code reviews
+CODE_REVIEW.md
