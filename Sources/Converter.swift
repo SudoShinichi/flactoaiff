@@ -78,7 +78,7 @@ enum Converter {
 
     /// The output format for `mode`. Original is lossless; max48 caps at 24-bit and resamples
     /// > 48 kHz to the same-family rate (88.2/176.4 → 44.1, 96/192 → 48) so the ratio stays an
-    /// integer; cd forces 16-bit / 44.1 kHz with dither when reducing bit depth.
+    /// integer; cd forces 16-bit / 44.1 kHz. Both dither when reducing bit depth.
     static func outputFormat(for source: SourceFormat, mode: OutputMode) -> OutputFormat {
         let matched: Int
         switch source.depth ?? 24 {   // on detection failure, fail toward lossless
@@ -90,9 +90,9 @@ enum Converter {
         case .original:
             return OutputFormat(depth: matched, rate: nil, dither: false)
         case .max48:
-            let depth = min(matched, 24)
-            guard let rate = source.rate, rate > 48_000 else { return OutputFormat(depth: depth, rate: nil, dither: false) }
-            return OutputFormat(depth: depth, rate: rate % 44_100 == 0 ? 44_100 : 48_000, dither: false)
+            let depth = min(matched, 24), dither = matched > depth
+            guard let rate = source.rate, rate > 48_000 else { return OutputFormat(depth: depth, rate: nil, dither: dither) }
+            return OutputFormat(depth: depth, rate: rate % 44_100 == 0 ? 44_100 : 48_000, dither: dither)
         case .cd:
             // Unknown rate → resample anyway: CD players accept nothing but 44.1 kHz.
             return OutputFormat(depth: 16, rate: source.rate == 44_100 ? nil : 44_100,
@@ -142,6 +142,10 @@ enum Converter {
                 if format.dither { args += ["--dither", "1"] }   // TPDF
                 let (code, err) = run(afconvert, args + [flacURL.path, tmp.path])
                 guard code == 0 else {
+                    // Apple's FLAC decoder stops at 24-bit (macOS 26 still does); say so plainly.
+                    if let depth = streamInfo?.bitsPerSample, depth > 24 {
+                        throw ConvertError.afconvertFailed("macOS can't decode \(depth)-bit FLAC — save it as 24-bit in an audio editor first")
+                    }
                     throw ConvertError.afconvertFailed(err.isEmpty ? "afconvert exited with code \(code)" : err.trimmingCharacters(in: .whitespacesAndNewlines))
                 }
 

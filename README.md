@@ -84,8 +84,8 @@ were added with.
 
 | Format | Output |
 | --- | --- |
-| **Original** (default) | Lossless: same sample rate; 16, 24 or 32-bit to match the source |
-| **CDJ: max 24-bit / 48 kHz** | Higher sample rates are resampled to the same family (96 → 48 kHz, 88.2 → 44.1 kHz), and depth is capped at 24-bit |
+| **Original** (default) | Lossless: same sample rate and bit depth (16 or 24-bit) as the source |
+| **CDJ: max 24-bit / 48 kHz** | Higher sample rates are resampled to the same family (96 → 48 kHz, 88.2 → 44.1 kHz); bit depth is kept |
 | **CD: 16-bit / 44.1 kHz** | Resampled and dithered to CD format |
 
 Files that already fit a format are converted unchanged. For example, a 16-bit/44.1 kHz FLAC
@@ -161,6 +161,8 @@ is preserved.
 
 - **Apple Silicon only, and you build it yourself.** There's no signed or notarized release.
 - **FLAC input only.** WAV, ALAC and other formats are skipped.
+- **No 32-bit FLAC.** macOS's FLAC decoder stops at 24-bit, so these files fail with a clear
+  message. They are rare; save them as 24-bit in an audio editor first.
 - **Duplicates are detected by file name.** If `track.aiff` already exists in the output folder,
   a different FLAC named `track.flac` is reported as "Already converted".
 - **Changing the format doesn't redo existing files.** Delete the AIFFs first.
@@ -170,14 +172,15 @@ is preserved.
   - Renaming converted files inside it doesn't convert them again until the next launch; after a
     relaunch, a renamed file counts as new.
   - On exFAT volumes, renames may always count as new.
-- **The CDJ format cuts 32-bit sources to 24-bit without dither.** This is rare, and the error
-  is at the level of 24-bit audio's own noise floor.
 
 ## Troubleshooting
 
 **"FLAC is incomplete — only N% of the audio is there".** The FLAC is shorter than its header
 says. It is still being downloaded or copied, or the download broke off. Wait for it to finish,
 or download it again.
+
+**"macOS can't decode 32-bit FLAC".** macOS only decodes FLAC up to 24-bit. Save the file as
+24-bit in an audio editor, then add it again.
 
 **"Audio doesn't match the FLAC's checksum — the FLAC may be damaged".** The decoded audio
 doesn't match the checksum the FLAC was encoded with, so the FLAC file itself is probably
@@ -209,7 +212,7 @@ permission goes to FlacToAiff itself.
 ```
 
 `test.sh` runs end-to-end checks on real FLAC files that it generates itself. It covers:
-- bit-depth and sample-rate handling in every format
+- bit-depth and sample-rate handling in every format, including a 32-bit FLAC that macOS can't decode
 - tag and artwork transfer, including unusual tags
 - the verification checks, including tampered and truncated files
 - duplicate handling and concurrent conversions
@@ -242,6 +245,7 @@ FlacToAiff.app/Contents/MacOS/FlacToAiff --watch   [--format original|max48|cd] 
 | `Sources/ConversionQueue.swift` | Background queue shared by all inputs |
 | `Sources/Settings.swift` | Persisted settings |
 | `scripts/make-icon.swift` | Draws the app icon; rendered by `build.sh` |
+| `scripts/make-flac32.swift` | Writes a 32-bit FLAC for `test.sh` (macOS tools can't) |
 
 ## License
 
