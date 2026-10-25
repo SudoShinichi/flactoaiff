@@ -222,7 +222,7 @@ struct DropView: View {
                 VStack(spacing: 8) {
                     Image(systemName: "arrow.down.circle")
                         .font(.system(size: 44, weight: .light))
-                    Text(queue.isWorking ? "Converting…" : "Drop \(AudioSources.names) files or folders here")
+                    Text(queue.isConverting ? "Converting…" : queue.isWorking ? "Checking…" : "Drop \(AudioSources.names) files or folders here")
                         .font(.headline)
                     Text("Converted .aiff files are saved to \(settings.outputFolder.lastPathComponent)")
                         .font(.caption)
@@ -436,7 +436,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Quitting mid-batch leaves the remaining files unconverted, so ask first.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard queue.isWorking else { return .terminateNow }
+        guard queue.isConverting else { return .terminateNow }   // a USB check only reads: nothing to lose
         let alert = NSAlert()
         alert.messageText = "Quit while converting?"
         alert.informativeText = "The file being converted and those not yet converted are skipped. You can drop them again later — finished AIFFs are kept."

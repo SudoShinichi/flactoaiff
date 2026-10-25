@@ -5,7 +5,7 @@ import Foundation
 /// rekordbox export, so the fix is to convert the originals and export them again.
 enum USBCheck {
     /// Audio files the check looks at. Anything else (artwork, rekordbox's .DAT files) is ignored.
-    private static let audioExtensions: Set<String> = ["flac", "wav", "wave", "m4a", "aif", "aiff", "mp3", "aac",
+    private static let audioExtensions: Set<String> = ["flac", "wav", "wave", "m4a", "aif", "aiff", "mp3", "aac", "mp4",
                                                        "ogg", "opus", "wma", "dsf", "dff", "ape", "m4p"]
 
     /// Rows for `folder` (a stick, or a folder on one): a note about its file system if needed,
@@ -55,8 +55,8 @@ enum USBCheck {
             return nil
         }
         switch ext {
-        case "mp3":
-            return nil   // every listed player plays MP3 (the manuals' MP3 rows)
+        case "mp3", "aac", "mp4":
+            return nil   // every listed player plays MP3 and AAC (.m4a, .aac, .mp4), per the manuals
         case "aif", "aiff":
             guard let info = TagIO.aiffInfo(file) else { return "Can't read this AIFF — it may be damaged" }
             return rateAndDepth(rate: Int(info.rate), bits: info.bitsPerSample)

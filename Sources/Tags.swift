@@ -95,6 +95,22 @@ enum TagIO {
         return tags
     }
 
+    /// Where a FLAC's audio frames are: from the end of its metadata blocks to the end of the file.
+    static func flacAudioRange(_ url: URL) -> (offset: UInt64, length: UInt64)? {
+        guard let fh = openFlac(url) else { return nil }
+        defer { try? fh.close() }
+        while true {
+            let header = fh.readData(ofLength: 4)
+            guard header.count == 4 else { return nil }
+            let length = UInt64(header[1]) << 16 | UInt64(header[2]) << 8 | UInt64(header[3])
+            guard (try? fh.seek(toOffset: fh.offsetInFile + length)) != nil else { return nil }
+            if header[0] & 0x80 != 0 { break }
+        }
+        let start = fh.offsetInFile
+        guard let end = try? fh.seekToEnd(), end > start else { return nil }
+        return (start, end - start)
+    }
+
     /// STREAMINFO (always the first block) as the encoder declared it. nil if unreadable;
     /// `samples` is 0 when the encoder didn't know the length, `md5` nil when it didn't store one.
     static func flacStreamInfo(_ url: URL) -> StreamInfo? {
@@ -232,6 +248,29 @@ enum TagIO {
 
     // MARK: - iTunes (MP4) reading
 
+    /// An MP4 file's top-level `mdat` payload: the encoded audio, which retagging doesn't touch.
+    static func mp4MediaData(_ url: URL) -> (offset: UInt64, length: UInt64)? {
+        guard let fh = try? FileHandle(forReadingFrom: url), let end = try? fh.seekToEnd() else { return nil }
+        defer { try? fh.close() }
+        var pos: UInt64 = 0
+        while pos + 8 <= end, (try? fh.seek(toOffset: pos)) != nil {
+            let h = fh.readData(ofLength: 8)
+            guard h.count == 8 else { return nil }
+            var size = h.prefix(4).reduce(UInt64(0)) { $0 << 8 | UInt64($1) }, header: UInt64 = 8
+            if size == 1 {   // 64-bit size follows
+                let big = fh.readData(ofLength: 8)
+                guard big.count == 8 else { return nil }
+                size = big.reduce(UInt64(0)) { $0 << 8 | UInt64($1) }; header = 16
+            } else if size == 0 {   // to the end of the file
+                size = end - pos
+            }
+            guard size >= header else { return nil }
+            if h.suffix(4) == Data("mdat".utf8) { return (pos + header, min(size, end - pos) - header) }
+            pos += size
+        }
+        return nil
+    }
+
     /// An .m4a's iTunes tags, through AVFoundation, mapped onto the same keys as FLAC's.
     /// Free-form ----:com.apple.iTunes:NAME fields keep their name (INITIALKEY, LABEL…).
     static func readITunesTags(_ url: URL) -> Tags {
@@ -255,6 +294,12 @@ enum TagIO {
                 if number > 0 && total > 0 { tags.comments.append((totalKey, String(total))) }
             case "itsk/tmpo":
                 if let bpm = item.numberValue?.intValue, bpm > 0 { tags.comments.append(("BPM", String(bpm))) }
+            case "itsk/gnre":   // older iTunes: a standard genre as its ID3v1 number, plus one
+                guard let d = item.dataValue, d.count >= 2 else { continue }
+                let n = Int(d[d.startIndex]) << 8 | Int(d[d.startIndex + 1])
+                if n >= 1, n <= id3v1Genres.count { tags.comments.append(("GENRE", id3v1Genres[n - 1])) }
+            case "itsk/cpil":
+                if item.numberValue?.intValue == 1 { tags.comments.append(("COMPILATION", "1")) }
             case "itsk/covr":
                 guard let d = item.dataValue, !d.isEmpty else { continue }
                 let png = d.starts(with: [0x89, 0x50, 0x4E, 0x47])
@@ -270,7 +315,24 @@ enum TagIO {
     private static let iTunesKeys = [
         "itsk/%A9nam": "TITLE", "itsk/%A9ART": "ARTIST", "itsk/%A9alb": "ALBUM", "itsk/aART": "ALBUMARTIST",
         "itsk/%A9gen": "GENRE", "itsk/%A9wrt": "COMPOSER", "itsk/%A9day": "DATE", "itsk/%A9cmt": "COMMENT",
-        "itsk/cprt": "COPYRIGHT",
+        "itsk/cprt": "COPYRIGHT", "itsk/%A9grp": "GROUPING",
+    ]
+
+    /// The ID3v1 genres (0–79) and Winamp's extensions (80–125), which iTunes's `gnre` numbers.
+    private static let id3v1Genres = [
+        "Blues", "Classic Rock", "Country", "Dance", "Disco", "Funk", "Grunge", "Hip-Hop", "Jazz", "Metal",
+        "New Age", "Oldies", "Other", "Pop", "R&B", "Rap", "Reggae", "Rock", "Techno", "Industrial",
+        "Alternative", "Ska", "Death Metal", "Pranks", "Soundtrack", "Euro-Techno", "Ambient", "Trip-Hop", "Vocal", "Jazz+Funk",
+        "Fusion", "Trance", "Classical", "Instrumental", "Acid", "House", "Game", "Sound Clip", "Gospel", "Noise",
+        "AlternRock", "Bass", "Soul", "Punk", "Space", "Meditative", "Instrumental Pop", "Instrumental Rock", "Ethnic", "Gothic",
+        "Darkwave", "Techno-Industrial", "Electronic", "Pop-Folk", "Eurodance", "Dream", "Southern Rock", "Comedy", "Cult", "Gangsta",
+        "Top 40", "Christian Rap", "Pop/Funk", "Jungle", "Native American", "Cabaret", "New Wave", "Psychedelic", "Rave", "Showtunes",
+        "Trailer", "Lo-Fi", "Tribal", "Acid Punk", "Acid Jazz", "Polka", "Retro", "Musical", "Rock & Roll", "Hard Rock",
+        "Folk", "Folk-Rock", "National Folk", "Swing", "Fast Fusion", "Bebob", "Latin", "Revival", "Celtic", "Bluegrass",
+        "Avantgarde", "Gothic Rock", "Progressive Rock", "Psychedelic Rock", "Symphonic Rock", "Slow Rock", "Big Band", "Chorus",
+        "Easy Listening", "Acoustic", "Humour", "Speech", "Chanson", "Opera", "Chamber Music", "Sonata", "Symphony", "Booty Bass",
+        "Primus", "Porn Groove", "Satire", "Slow Jam", "Club", "Tango", "Samba", "Folklore", "Ballad", "Power Ballad",
+        "Rhythmic Soul", "Freestyle", "Duet", "Punk Rock", "Drum Solo", "A capella", "Euro-House", "Dance Hall",
     ]
 
     // MARK: - ID3v2 reading
@@ -283,15 +345,18 @@ enum TagIO {
     }()
 
     /// Read an ID3v2.3 or v2.4 tag into `tags`: known text frames, TXXX, COMM and APIC.
-    /// Anything it can't read safely (v2.2, unsynchronised or compressed frames) is left out.
+    /// Anything it can't read safely (v2.2, compressed or encrypted frames) is left out.
     static func parseID3(_ tag: Data, into tags: inout Tags) {
         var r = Reader(tag)
         guard let head = r.bytes(10), head.prefix(3) == Data("ID3".utf8) else { return }
         let h = head.startIndex, version = head[h + 3], flags = head[h + 5]
-        guard version == 3 || version == 4, flags & 0x80 == 0 else { return }
+        guard version == 3 || version == 4 else { return }
         func syncsafe(_ d: Data) -> Int { d.reduce(0) { $0 << 7 | Int($1 & 0x7F) } }
         let end = min(tag.startIndex + 10 + syncsafe(head[(h + 6)..<(h + 10)]), tag.endIndex)
-        var frames = Reader(tag[(tag.startIndex + 10)..<end])
+        // v2.3 unsynchronises the whole tag; v2.4 marks each frame (and may mark the tag too).
+        var frameData = Data(tag[(tag.startIndex + 10)..<end])
+        if version == 3 && flags & 0x80 != 0 { frameData = resynchronised(frameData) }
+        var frames = Reader(frameData)
         if flags & 0x40 != 0 {   // extended header: v2.3 counts its size without itself, v2.4 with
             guard let size = frames.bytes(4) else { return }
             _ = frames.skip(version == 3 ? Int(size.reduce(0) { $0 << 8 | UInt32($1) }) : syncsafe(size) - 4)
@@ -301,7 +366,8 @@ enum TagIO {
             let size = version == 4 ? syncsafe(sizeBytes) : Int(sizeBytes.reduce(0) { $0 << 8 | UInt32($1) })
             guard var body = frames.bytes(size) else { return }
             let format = frameFlags[frameFlags.startIndex + 1]
-            if version == 3 ? format & 0xC0 != 0 : format & 0x0E != 0 { continue }   // compressed, encrypted, unsynchronised
+            if version == 3 ? format & 0xC0 != 0 : format & 0x0C != 0 { continue }   // compressed, encrypted
+            if version == 4 && format & 0x02 != 0 { body = resynchronised(body) }
             if version == 4 && format & 0x01 != 0 { body = body.dropFirst(4) }       // data length indicator
             guard let encoding = body.first else { continue }
             let id = String(decoding: idBytes, as: UTF8.self), text = body.dropFirst()
@@ -326,6 +392,17 @@ enum TagIO {
                 for v in id3Strings(text, encoding) { tags.comments.append((key, v)) }
             }
         }
+    }
+
+    /// Undo ID3 unsynchronisation: every FF 00 back to FF.
+    private static func resynchronised(_ d: Data) -> Data {
+        var out = Data(capacity: d.count)
+        var previous: UInt8 = 0
+        for b in d {
+            if !(previous == 0xFF && b == 0x00) { out.append(b) }
+            previous = b
+        }
+        return out
     }
 
     /// Split at the first terminator of `encoding` (one NUL, or two aligned NULs for UTF-16).
@@ -364,7 +441,7 @@ enum TagIO {
         ("ALBUMARTIST", "TPE2"), ("GENRE", "TCON"), ("COMPOSER", "TCOM"),
         ("BPM", "TBPM"), ("INITIALKEY", "TKEY"), ("ISRC", "TSRC"),
         ("ORGANIZATION", "TPUB"), ("LABEL", "TPUB"), ("COPYRIGHT", "TCOP"),
-        ("REMIXER", "TPE4"), ("CONDUCTOR", "TPE3"),
+        ("REMIXER", "TPE4"), ("CONDUCTOR", "TPE3"), ("GROUPING", "TIT1"),
     ]
 
     /// Keys consumed by a dedicated frame; everything else goes to TXXX.
