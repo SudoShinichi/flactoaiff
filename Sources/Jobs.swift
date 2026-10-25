@@ -15,7 +15,7 @@ enum WorkItem {
 
 /// The result of one work item, as listed in the window and printed by the CLI.
 struct Row: Identifiable {
-    enum Kind { case converted, alreadyConverted, leftAlone, skipped, failed }
+    enum Kind { case converted, alreadyConverted, leftAlone, skipped, failed, info }
     let id = UUID()
     let name: String
     let kind: Kind

@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 //   --convert [<format>] <file-or-folder>... <outputDir>
 //   --watch   [<format>] [--catch-up-since <unix-time>] <watchDir> <outputDir>   (until killed)
 //   <format>: --format original|max96|max48|cd, or --player <name> [--skip-playable]
+//   --check   --player <name> <folder>   (USB check, read-only)
 
 let cliArgs = CommandLine.arguments
 func cliUsage() -> Never {
@@ -15,6 +16,7 @@ func cliUsage() -> Never {
                FlacToAiff --watch [<format>] [--catch-up-since <unix-time>] <watchDir> <outputDir>
         <format>: --format original|max96|max48|cd
                   --player <name> [--skip-playable]   (\(Player.all.map(\.id).joined(separator: ", ")))
+               FlacToAiff --check --player <name> <folder>
 
         """.data(using: .utf8)!)
     exit(2)
@@ -26,11 +28,12 @@ func cliPrint(_ row: Row) -> Bool {
     case .converted:        print("OK \(row.output!.path)\t\(row.checks ?? "")")
     case .alreadyConverted: print("SKIP \(row.output!.path)")
     case .leftAlone:        print("KEEP \(row.name)\t\(row.detail)")
+    case .info:             print("NOTE \(row.name): \(row.detail)")
     case .skipped, .failed:
         FileHandle.standardError.write("ERROR \(row.name): \(row.detail)\n".data(using: .utf8)!)
     }
     fflush(stdout)
-    return row.kind == .converted || row.kind == .alreadyConverted || row.kind == .leftAlone
+    return row.kind != .skipped && row.kind != .failed
 }
 
 /// Killed (Ctrl-C, kill): end the running afconvert and delete its temp file before exiting.
@@ -43,6 +46,15 @@ func cliStopOnSignals() {
         source.resume()
         cliSignalSources.append(source)
     }
+}
+
+if cliArgs.count >= 2 && cliArgs[1] == "--check" {
+    // --check --player <name> <folder>: exit 1 when the player can't read the stick or a track.
+    let args = Array(cliArgs.dropFirst(2))
+    guard args.count == 3, args[0] == "--player", let player = Player.named(args[1]), !player.plays.isEmpty else { cliUsage() }
+    var failed = false
+    for row in USBCheck.run(URL(fileURLWithPath: args[2], isDirectory: true), on: player) where !cliPrint(row) { failed = true }
+    exit(failed ? 1 : 0)
 }
 
 if cliArgs.count >= 2 && (cliArgs[1] == "--convert" || cliArgs[1] == "--watch") {
@@ -179,8 +191,17 @@ struct DropView: View {
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if !settings.player.plays.isEmpty {
-                Toggle("Skip files the player already plays", isOn: $settings.skipPlayable)
-                    .help("Leave files alone that the \(settings.player.name) plays as they are, instead of making AIFFs of them")
+                HStack {
+                    Toggle("Skip files the player already plays", isOn: $settings.skipPlayable)
+                        .help("Leave files alone that the \(settings.player.name) plays as they are, instead of making AIFFs of them")
+                    Spacer()
+                    Button("Check USB Stick…") {
+                        if let url = pickFolder(startingAt: URL(fileURLWithPath: "/Volumes"), prompt: "Check") {
+                            queue.check(url, for: settings.player)
+                        }
+                    }
+                    .help("List the tracks on a stick that the \(settings.player.name) won't play. Nothing on the stick is changed.")
+                }
             }
         }
         .font(.callout)
@@ -292,6 +313,7 @@ private extension Row.Kind {
         case .converted:        return "checkmark.circle.fill"
         case .alreadyConverted: return "forward.end.circle.fill"
         case .leftAlone:        return "play.circle.fill"
+        case .info:             return "info.circle.fill"
         case .skipped:          return "minus.circle.fill"
         case .failed:           return "xmark.circle.fill"
         }
@@ -301,6 +323,7 @@ private extension Row.Kind {
         switch self {
         case .converted:                     return .green
         case .alreadyConverted, .leftAlone, .skipped: return .secondary
+        case .info:                          return .accentColor
         case .failed:                        return .red
         }
     }
