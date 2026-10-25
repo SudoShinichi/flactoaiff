@@ -1,26 +1,41 @@
 import CoreServices
 import Foundation
 
-/// Watches a folder tree for new FLACs and reports each one once it has finished being
-/// written (non-empty, size and modification time unchanged for a poll, and at least 2 s
-/// old). A writer that stalls longer than that is caught by Converter's length check, and
-/// the file is handed off again once it changes. UI-free.
+/// Watches a folder tree for FLACs that arrive after `start` (or after the catch-up date) and
+/// reports each one once it has finished being written: non-empty, size and modification
+/// time unchanged for a poll, and at least 2 s old (30 s when its header doesn't record its
+/// length, so a paused writer can't be caught mid-file). A writer that stalls longer than
+/// that is caught by Converter's length check, and the file is handed off again once it
+/// changes. FLACs that were already there are left alone, whatever happens to them. UI-free.
 final class FolderWatcher {
+    /// A finished FLAC, and when it arrived (see arrivalDate).
+    struct Ready {
+        let file: URL
+        let arrived: Date
+    }
+
     /// The watch folder with symlinks resolved (/var → /private/var), as FSEvents reports paths.
     let root: URL
     /// Ready files, on the watcher's queue. `quiet`: found by catch-up or a rescan rather than
     /// a live event, so an "Already converted" result isn't news.
-    private let onReady: (_ files: [URL], _ quiet: Bool) -> Void
+    private let onReady: (_ files: [Ready], _ quiet: Bool) -> Void
     private let queue = DispatchQueue(label: "local.flactoaiff.watcher")
     private let onQueue = DispatchSpecificKey<Void>()
-    /// Set by stop() before it waits for the queue, so a long catch-up scan gives up early.
-    private let cancelled = LockedFlag()
+    /// Set by stop() before it waits for the queue, so a long scan gives up early.
+    private let cancelled = Locked(false)
+    private let oldest = Locked<Date?>(nil)
 
     // All below: watcher queue only (after start()).
     private var stream: FSEventStreamRef?
     private var timer: DispatchSourceTimer?
     private var stopped = false
-    private var startedAt = Date()
+    /// Files that arrived before this were already in the folder.
+    private var cutoff = Date()
+    /// Until the first scan finishes, a FLAC from before the cutoff may not be known yet.
+    private var scanning = false
+    /// The FLACs that were already in the folder, by file system ID: moving one into a
+    /// subfolder resets its Date Added, but not its ID.
+    private var preexisting = Set<FileID>()
     private var polls = 0
 
     private struct Snapshot: Equatable {
@@ -28,14 +43,17 @@ final class FolderWatcher {
         let modified: TimeInterval
         static let unseen = Snapshot(size: -1, modified: 0)
     }
-    private var pending: [String: (snap: Snapshot, quiet: Bool, stablePolls: Int)] = [:]
+    private var pending: [String: (snap: Snapshot, quiet: Bool, stablePolls: Int, arrived: Date)] = [:]
+    /// Arrival dates of the files handed off by the last poll: they hold `oldestUnfinished`
+    /// back until the receiver has surely queued them.
+    private var justHandedOff: [Date] = []
     /// Files handed off, by file system ID: a rename or move inside the volume keeps the ID,
     /// so re-sorting converted albums doesn't convert them again. `path` is where it was last
     /// seen, for forgetting files that are gone.
     private struct FileID: Hashable { let device: Int32; let inode: UInt64 }
     private var handedOff: [FileID: (snap: Snapshot, path: String)] = [:]
 
-    init(root: URL, onReady: @escaping (_ files: [URL], _ quiet: Bool) -> Void) {
+    init(root: URL, onReady: @escaping (_ files: [Ready], _ quiet: Bool) -> Void) {
         self.root = Self.resolve(root)
         self.onReady = onReady
         queue.setSpecific(key: onQueue, value: ())
@@ -82,22 +100,37 @@ final class FolderWatcher {
         queue.sync {
             stream = s
             timer = t
-            startedAt = Date()
+            cutoff = min(since ?? .distantFuture, Date())
+            scanning = true
+            publishOldest()
             t.resume()
         }
-        if let since = since {
-            queue.async { [self] in
-                for file in arrivals(under: root, since: since) where !cancelled.isSet { track(file.path, quiet: true) }
+        // Note what was already there, and catch up on what arrived since `since`. Events
+        // queue up behind this, so they see the finished list.
+        queue.async { [self] in
+            for rel in Jobs.flacs(in: root, isCancelled: { self.cancelled.value }) {
+                let file = root.appendingPathComponent(rel)
+                if let arrived = Self.arrivalDate(of: file, under: root), arrived >= cutoff {
+                    track(file.path, quiet: true, arrived: arrived)
+                } else if let id = Self.fileID(file.path) {
+                    preexisting.insert(id)
+                }
             }
+            scanning = false
+            publishOldest()
         }
         return true
     }
 
     /// After this returns, onReady is never called again.
     func stop() {
-        cancelled.set()
+        cancelled.value = true
         queue.sync { shutDown() }
     }
+
+    /// The earliest arrival among FLACs found but not handed off yet (still being written, or
+    /// not yet found by a running catch-up): watchedUntil must not pass it. Any thread.
+    var oldestUnfinished: Date? { oldest.value }
 
     // MARK: - On the watcher's queue
 
@@ -115,10 +148,10 @@ final class FolderWatcher {
         let isRoot = path == root.path
         guard isRoot || (path.hasPrefix(root.path + "/") && !isIgnored(path)) else { return }
 
-        // Events were coalesced or dropped: rescan, keeping only what arrived since we started.
+        // Events were coalesced or dropped: rescan, keeping only what arrived since the cutoff.
         if flags & FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs) != 0 {
-            for file in arrivals(under: URL(fileURLWithPath: path, isDirectory: true), since: startedAt) {
-                track(file.path, quiet: true)
+            for (file, arrived) in arrivals(under: URL(fileURLWithPath: path, isDirectory: true)) {
+                track(file.path, quiet: true, arrived: arrived)
             }
             return
         }
@@ -133,40 +166,60 @@ final class FolderWatcher {
             let dir = URL(fileURLWithPath: path, isDirectory: true)
             // A package (an .app, Safari's .download) is one item, as in folder drops.
             guard (try? dir.resourceValues(forKeys: [.isPackageKey]))?.isPackage != true else { return }
-            for rel in Jobs.flacs(in: dir) { track(dir.appendingPathComponent(rel).path, quiet: false) }
-        } else if (path as NSString).pathExtension.lowercased() == "flac" {
-            track(path, quiet: false)
+            for (file, arrived) in arrivals(under: dir) { track(file.path, quiet: false, arrived: arrived) }
+        } else if (path as NSString).pathExtension.lowercased() == "flac", pending[path] == nil,
+                  let arrived = arrival(of: URL(fileURLWithPath: path)) {
+            track(path, quiet: false, arrived: arrived)
         }
     }
 
-    private func track(_ path: String, quiet: Bool) {
-        if pending[path] == nil { pending[path] = (.unseen, quiet, 0) }
+    /// When `file` arrived, or nil if it was already in the folder before the cutoff: a tag,
+    /// permission or name change, or a move inside the folder, doesn't make it new.
+    private func arrival(of file: URL) -> Date? {
+        guard let id = Self.fileID(file.path), !preexisting.contains(id),
+              let arrived = Self.arrivalDate(of: file, under: root), arrived >= cutoff else { return nil }
+        return arrived
     }
 
-    /// FLACs under `dir` that arrived at or after `since`: the file's own Finder "Date Added",
-    /// or that of a folder between it and `root` (a folder moved in keeps its files' old dates).
-    /// Volumes without Date Added (exFAT, FAT) fall back to the creation date.
-    private func arrivals(under dir: URL, since: Date) -> [URL] {
-        Jobs.flacs(in: dir).map { dir.appendingPathComponent($0) }.filter { file in
-            !cancelled.isSet && (Self.arrivalDate(of: file, under: root) ?? .distantPast) >= since
+    private static func fileID(_ path: String) -> FileID? {
+        var st = stat()
+        return stat(path, &st) == 0 ? FileID(device: st.st_dev, inode: st.st_ino) : nil
+    }
+
+    private func track(_ path: String, quiet: Bool, arrived: Date) {
+        if pending[path] == nil { pending[path] = (.unseen, quiet, 0, arrived) }
+    }
+
+    /// FLACs under `dir` that arrived since the cutoff, with their arrival dates.
+    private func arrivals(under dir: URL) -> [(URL, Date)] {
+        Jobs.flacs(in: dir, isCancelled: { self.cancelled.value }).compactMap { rel in
+            let file = dir.appendingPathComponent(rel)
+            return arrival(of: file).map { (file, $0) }
         }
     }
 
-    /// When `file` arrived in the watch folder `root`: the newest Finder "Date Added" of the
-    /// file and of the folders between it and `root` (a folder moved in keeps its files' old
-    /// dates), never later than now. Volumes without Date Added (exFAT, FAT) use the creation date.
+    /// When `file` arrived in the watch folder `root`: the newest of its Finder "Date Added",
+    /// its last modification (a download renamed into place at the end keeps the Date Added
+    /// of its start), and the Date Added of the folders between it and `root` (a folder moved
+    /// in keeps its files' old dates). Never later than now. Volumes without Date Added (exFAT,
+    /// FAT) use the creation date.
     static func arrivalDate(of file: URL, under root: URL) -> Date? {
         func added(_ url: URL) -> Date? {
             let values = try? url.resourceValues(forKeys: [.addedToDirectoryDateKey, .creationDateKey])
             return values?.addedToDirectoryDate ?? values?.creationDate
         }
-        var newest = added(file)
+        let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        var newest = [added(file), modified].compactMap { $0 }.max()
         var folder = file.deletingLastPathComponent()
         while folder.path.hasPrefix(root.path + "/") {
             if let date = added(folder), date > newest ?? .distantPast { newest = date }
             folder = folder.deletingLastPathComponent()
         }
         return newest.map { min($0, Date()) }
+    }
+
+    private func publishOldest() {
+        oldest.value = ([scanning ? cutoff : nil] + pending.values.map(\.arrived) + justHandedOff).compactMap { $0 }.min()
     }
 
     /// Hidden components, or a package (e.g. an .app) anywhere between `root` and `path`.
@@ -187,7 +240,8 @@ final class FolderWatcher {
         if polls % 600 == 0 {   // every ~10 min, forget files that are gone, so this doesn't grow forever
             handedOff = handedOff.filter { FileManager.default.fileExists(atPath: $0.value.path) }
         }
-        var ready: [URL] = [], readyQuiet: [URL] = []
+        var ready: [Ready] = [], readyQuiet: [Ready] = []
+        justHandedOff = []
         let now = Date().timeIntervalSince1970
         for (path, entry) in pending {
             var st = stat()
@@ -195,12 +249,16 @@ final class FolderWatcher {
             let snap = Snapshot(size: Int64(st.st_size),
                                 modified: TimeInterval(st.st_mtimespec.tv_sec) + TimeInterval(st.st_mtimespec.tv_nsec) / 1e9)
             let stable = snap == entry.snap ? entry.stablePolls + 1 : 0
+            // Without a length in its header, a FLAC cut short by a paused writer passes every
+            // check, so it has to sit still for longer.
+            let quietTime: TimeInterval = stable >= 1 && (TagIO.flacStreamInfo(URL(fileURLWithPath: path))?.samples ?? 0) == 0
+                ? Self.settleTimeWithoutLength : 2
             // A future mtime (a wrong clock on the copy's source, a NAS running ahead) can't
-            // show the file's age, so it has to stay unchanged for three polls instead.
-            let settled = now - snap.modified >= 2 ? stable >= 1 : snap.modified > now && stable >= 3
+            // show the file's age, so it has to stay unchanged for that many polls instead.
+            let settled = now - snap.modified >= quietTime ? stable >= 1 : snap.modified > now && stable > Int(quietTime)
             // Empty: a placeholder (Firefox creates one, then renames the download over it).
             guard snap.size > 0, settled else {
-                pending[path] = (snap, entry.quiet, stable); continue
+                pending[path] = (snap, entry.quiet, stable, entry.arrived); continue
             }
             pending[path] = nil
             // Already handed off (a repeated event, or the file was renamed or moved since):
@@ -208,18 +266,29 @@ final class FolderWatcher {
             let id = FileID(device: st.st_dev, inode: st.st_ino)
             if handedOff[id]?.snap == snap { handedOff[id]?.path = path; continue }
             handedOff[id] = (snap, path)
-            if entry.quiet { readyQuiet.append(URL(fileURLWithPath: path)) } else { ready.append(URL(fileURLWithPath: path)) }
+            justHandedOff.append(entry.arrived)
+            let r = Ready(file: URL(fileURLWithPath: path), arrived: entry.arrived)
+            if entry.quiet { readyQuiet.append(r) } else { ready.append(r) }
         }
-        func sorted(_ urls: [URL]) -> [URL] { urls.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending } }
+        publishOldest()
+        func sorted(_ r: [Ready]) -> [Ready] { r.sorted { $0.file.path.localizedStandardCompare($1.file.path) == .orderedAscending } }
         if !readyQuiet.isEmpty { onReady(sorted(readyQuiet), true) }
         if !ready.isEmpty { onReady(sorted(ready), false) }
     }
 }
 
-/// A Bool that any thread can set and read.
-private final class LockedFlag {
+extension FolderWatcher {
+    /// How long a FLAC whose header doesn't record its length must stay unchanged.
+    static let settleTimeWithoutLength: TimeInterval = 30
+}
+
+/// A value that any thread can set and read.
+private final class Locked<Value> {
     private let lock = NSLock()
-    private var value = false
-    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
-    func set() { lock.lock(); value = true; lock.unlock() }
+    private var stored: Value
+    init(_ value: Value) { stored = value }
+    var value: Value {
+        get { lock.lock(); defer { lock.unlock() }; return stored }
+        set { lock.lock(); stored = newValue; lock.unlock() }
+    }
 }
