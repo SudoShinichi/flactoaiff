@@ -54,7 +54,11 @@ enum Verifier {
         }
         if !writtenFrames.isEmpty {
             try verifyTags(aiff, writtenFrames)
-            checks.tags = true
+            // The source record is the app's own frame: the label counts the file's tags.
+            checks.tags = writtenFrames.contains {
+                if case .userText(let description, _) = $0 { return description != TagIO.sourceKey }
+                return true
+            }
         }
         return checks
     }

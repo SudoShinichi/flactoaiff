@@ -108,7 +108,7 @@ final class FolderWatcher {
         // Note what was already there, and catch up on what arrived since `since`. Events
         // queue up behind this, so they see the finished list.
         queue.async { [self] in
-            for rel in Jobs.flacs(in: root, isCancelled: { self.cancelled.value }) {
+            for rel in Jobs.audioFiles(in: root, isCancelled: { self.cancelled.value }) {
                 let file = root.appendingPathComponent(rel)
                 if let arrived = Self.arrivalDate(of: file, under: root), arrived >= cutoff {
                     track(file.path, quiet: true, arrived: arrived)
@@ -167,7 +167,7 @@ final class FolderWatcher {
             // A package (an .app, Safari's .download) is one item, as in folder drops.
             guard (try? dir.resourceValues(forKeys: [.isPackageKey]))?.isPackage != true else { return }
             for (file, arrived) in arrivals(under: dir) { track(file.path, quiet: false, arrived: arrived) }
-        } else if (path as NSString).pathExtension.lowercased() == "flac", pending[path] == nil,
+        } else if AudioSources.handles(URL(fileURLWithPath: path)), pending[path] == nil,
                   let arrived = arrival(of: URL(fileURLWithPath: path)) {
             track(path, quiet: false, arrived: arrived)
         }
@@ -192,7 +192,7 @@ final class FolderWatcher {
 
     /// FLACs under `dir` that arrived since the cutoff, with their arrival dates.
     private func arrivals(under dir: URL) -> [(URL, Date)] {
-        Jobs.flacs(in: dir, isCancelled: { self.cancelled.value }).compactMap { rel in
+        Jobs.audioFiles(in: dir, isCancelled: { self.cancelled.value }).compactMap { rel in
             let file = dir.appendingPathComponent(rel)
             return arrival(of: file).map { (file, $0) }
         }
@@ -251,7 +251,7 @@ final class FolderWatcher {
             let stable = snap == entry.snap ? entry.stablePolls + 1 : 0
             // Without a length in its header, a FLAC cut short by a paused writer passes every
             // check, so it has to sit still for longer.
-            let quietTime: TimeInterval = stable >= 1 && (TagIO.flacStreamInfo(URL(fileURLWithPath: path))?.samples ?? 0) == 0
+            let quietTime: TimeInterval = stable >= 1 && (AudioSources.open(URL(fileURLWithPath: path))?.info?.samples ?? 0) == 0
                 ? Self.settleTimeWithoutLength : 2
             // A future mtime (a wrong clock on the copy's source, a NAS running ahead) can't
             // show the file's age, so it has to stay unchanged for that many polls instead.

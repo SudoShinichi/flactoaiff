@@ -2,20 +2,20 @@ import Foundation
 
 /// Errors surfaced by the converter core.
 enum ConvertError: Error, CustomStringConvertible {
-    case notFlac
     case afconvertFailed(String)
     case saveFailed(String)
     case outputFolderUnavailable
     case verificationFailed(String)
+    case nameTaken(String)   // the AIFF's name, held by an AIFF made from another file
 
     var description: String {
         switch self {
-        case .notFlac:
-            return "Skipped — not a .flac file"
         case .afconvertFailed(let message), .saveFailed(let message), .verificationFailed(let message):
             return message
         case .outputFolderUnavailable:
             return "Output folder not available — choose another in “Save to”"
+        case .nameTaken(let name):
+            return "\(name) already exists, made from a different file — rename one of them and add it again"
         }
     }
 }
@@ -40,7 +40,7 @@ struct ConvertOptions {
     var mode: OutputMode = .original
 }
 
-/// Core FLAC → AIFF conversion logic. No UI knowledge; usable headless.
+/// Core audio → AIFF conversion logic. No UI knowledge; usable headless.
 enum Converter {
     static let afconvert = "/usr/bin/afconvert"
     static let afinfo = "/usr/bin/afinfo"
@@ -112,26 +112,26 @@ enum Converter {
         hz % 1000 == 0 ? "\(hz / 1000)" : String(format: "%.1f", Double(hz) / 1000)
     }
 
-    /// Convert a single FLAC to `destDir/<name>.aiff`. Skips if that AIFF already exists.
-    /// Format follows options.mode (see outputFormat); .original is lossless.
+    /// Convert one source to `destDir/<name>.aiff`. Skips if this source's AIFF already exists;
+    /// fails if an AIFF of that name was made from another file. Format follows options.mode
+    /// (see outputFormat); .original is lossless.
     ///
     /// The AIFF is written to a hidden temp file and renamed into place only when
     /// complete, so an existing `<name>.aiff` is always a finished file.
     @discardableResult
-    static func convert(flacURL: URL, destDir: URL, options: ConvertOptions = ConvertOptions()) throws -> Outcome {
-        guard flacURL.pathExtension.lowercased() == "flac" else { throw ConvertError.notFlac }
-        let base = flacURL.deletingPathExtension().lastPathComponent
+    static func convert(_ input: AudioSource, destDir: URL, options: ConvertOptions = ConvertOptions()) throws -> Outcome {
+        let base = input.url.deletingPathExtension().lastPathComponent
         let final = destDir.appendingPathComponent(base + ".aiff")
-        if FileManager.default.fileExists(atPath: final.path) { return .alreadyConverted(final) }
+        if FileManager.default.fileExists(atPath: final.path) { return try existing(final, for: input) }
 
         let createdDirs = try createDirectories(destDir)
         do {
             removeStalePartialsOnce(in: destDir)
             let tmp = try reserveTemp(in: destDir)
             do {
-                // STREAMINFO is exact; afinfo is the fallback, as it guesses 24-bit when unsure.
-                let streamInfo = TagIO.flacStreamInfo(flacURL)
-                let source = streamInfo.map { SourceFormat(depth: $0.bitsPerSample, rate: $0.rate) } ?? probe(flacURL)
+                // The file's own header is exact; afinfo is the fallback, as it guesses 24-bit when unsure.
+                let streamInfo = input.info
+                let source = streamInfo.map { SourceFormat(depth: $0.bitsPerSample, rate: $0.rate) } ?? probe(input.url)
                 let format = outputFormat(for: source, mode: options.mode)
                 var args = ["-f", "AIFF"]
                 if let rate = format.rate {
@@ -140,17 +140,15 @@ enum Converter {
                     args += ["-d", "BEI\(format.depth)"]   // with no dither: today's lossless command line
                 }
                 if format.dither { args += ["--dither", "1"] }   // TPDF
-                let (code, err) = run(afconvert, args + [flacURL.path, tmp.path])
+                let (code, err) = run(afconvert, args + [input.url.path, tmp.path])
                 guard code == 0 else {
-                    // Apple's FLAC decoder only takes 16, 20 and 24-bit (macOS 26 still); say so plainly.
-                    if let depth = streamInfo?.bitsPerSample, ![16, 20, 24].contains(depth) {
-                        throw ConvertError.afconvertFailed("macOS can't decode \(depth)-bit FLAC — save it as 16 or 24-bit in an audio editor first")
-                    }
+                    if let reason = input.decodeFailureReason { throw ConvertError.afconvertFailed(reason) }
                     throw ConvertError.afconvertFailed(err.isEmpty ? "afconvert exited with code \(code)" : err.trimmingCharacters(in: .whitespacesAndNewlines))
                 }
 
-                // afconvert drops all tags; carry title/artist/album/cover etc. over as an ID3 chunk.
-                let frames = TagIO.id3Frames(TagIO.readFlacTags(flacURL))
+                // afconvert drops all tags; carry title/artist/album/cover etc. over as an ID3 chunk,
+                // with a record of the source for telling same-named files apart later.
+                let frames = TagIO.id3Frames(input.tags()) + [.userText(description: TagIO.sourceKey, value: input.fingerprint)]
                 if let tag = TagIO.id3v23(frames) {
                     try TagIO.appendID3Chunk(tag, to: tmp)
                 }
@@ -160,7 +158,7 @@ enum Converter {
                 guard try publish(tmp, as: final) else {
                     try? FileManager.default.removeItem(at: tmp)
                     inFlight.remove(temp: tmp)
-                    return .alreadyConverted(final)
+                    return try existing(final, for: input)
                 }
                 inFlight.remove(temp: tmp)
                 return .converted(final, note: reductionNote(source, format), checks: checks)
@@ -176,6 +174,15 @@ enum Converter {
     }
 
     // MARK: - Output file helpers
+
+    /// `final` exists already: this source's earlier conversion, or another file's that shares
+    /// its name. An AIFF that records no source (an earlier version's) counts as this one's.
+    private static func existing(_ final: URL, for input: AudioSource) throws -> Outcome {
+        if let recorded = TagIO.recordedSource(final), recorded != input.fingerprint {
+            throw ConvertError.nameTaken(final.lastPathComponent)
+        }
+        return .alreadyConverted(final)
+    }
 
     /// Move the finished `tmp` to `final` without ever replacing an existing file.
     /// Returns false if `final` already exists (another conversion published it meanwhile).
