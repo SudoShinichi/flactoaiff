@@ -250,7 +250,8 @@ struct DropView: View {
     }
 }
 
-/// Menu titles and player-compatibility explanations (wording from the spec's "Output formats" table).
+/// Menu titles and explanations (wording from the spec's "Output formats" table). Player names are
+/// examples whose limits come from the manufacturer's manuals, not a compatibility list.
 extension OutputMode {
     var title: String {
         switch self {
@@ -263,11 +264,11 @@ extension OutputMode {
     var explanation: String {
         switch self {
         case .original:
-            return "Unchanged quality. For CDJ-3000/3000X, CDJ-2000NXS2 (USB/SD), rekordbox, Serato and Music."
+            return "Same quality as the FLAC. For hi-res-capable players and software, such as the CDJ-3000, CDJ-2000NXS2 or Apple Music."
         case .max48:
-            return "For CDJ-2000NXS, 2000, 900NXS, 850, 350 and XDJ-1000MK2: hi-res files are lowered to 48 kHz / 24-bit."
+            return "Lowers hi-res files to 48 kHz / 24-bit, for players limited to that, such as the CDJ-2000NXS. Check your player's manual."
         case .cd:
-            return "For burning audio CDs for CD-only players (CDJ-1000MK3, 800MK2, 400): everything becomes 16-bit / 44.1 kHz."
+            return "Makes everything 16-bit / 44.1 kHz, the audio CD format, for burning CDs."
         }
     }
 }

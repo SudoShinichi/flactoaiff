@@ -64,9 +64,9 @@ A setting with three modes. `Original` is the default.
 
 | Mode (`OutputMode`) | Menu title | Output | Explanation shown under the menu |
 | --- | --- | --- | --- |
-| `original` | Original (lossless) | Depth matched (≤16→16, 17–24→24, >24→32), rate unchanged | Unchanged quality. For CDJ-3000/3000X, CDJ-2000NXS2 (USB/SD), rekordbox, Serato and Music. |
-| `max48` | CDJ: max 24-bit / 48 kHz | Depth as Original but capped at 24. Rate >48 kHz → 44.1 kHz if a multiple of 44 100, else 48 kHz. ≤48 kHz unchanged. | For CDJ-2000NXS, 2000, 900NXS, 850, 350 and XDJ-1000MK2: hi-res files are lowered to 48 kHz / 24-bit. |
-| `cd` | CD: 16-bit / 44.1 kHz | Always 16-bit / 44.1 kHz. TPDF dither (`--dither 1`) when the source is >16-bit or its depth is unknown. | For burning audio CDs for CD-only players (CDJ-1000MK3, 800MK2, 400): everything becomes 16-bit / 44.1 kHz. |
+| `original` | Original (lossless) | Depth matched (≤16→16, 17–24→24, >24→32), rate unchanged | Same quality as the FLAC. For hi-res-capable players and software, such as the CDJ-3000, CDJ-2000NXS2 or Apple Music. |
+| `max48` | CDJ: max 24-bit / 48 kHz | Depth as Original but capped at 24. Rate >48 kHz → 44.1 kHz if a multiple of 44 100, else 48 kHz. ≤48 kHz unchanged. | Lowers hi-res files to 48 kHz / 24-bit, for players limited to that, such as the CDJ-2000NXS. Check your player's manual. |
+| `cd` | CD: 16-bit / 44.1 kHz | Always 16-bit / 44.1 kHz. TPDF dither (`--dither 1`) when the source is >16-bit or its depth is unknown. | Makes everything 16-bit / 44.1 kHz, the audio CD format, for burning CDs. |
 
 - The model lists come from third-party compatibility guides and Pioneer manual excerpts (researched 2026-10-24). The in-app text names only these models.
 - The rate is detected from `afinfo -x` (`track/sample_rate`), the same way as bit depth.
