@@ -29,8 +29,9 @@ metadata and cover art intact.
   that land in it convert automatically while the app is open. A file is converted once it has
   stopped changing; if a copy stalls and the FLAC turns out incomplete, it is reported and
   converted again once it is finished. FLACs added while the app was quit are converted at the
-  next launch. Files that were already there when you started watching are left alone, and
-  renaming or re-sorting converted albums inside the watch folder doesn't convert them again.
+  next launch. Files that were already there when you started watching are left alone. While the
+  app is running, renaming or re-sorting converted albums inside the watch folder doesn't convert
+  them again; after a relaunch that counts as a new arrival.
 - **Lossless** — sample rate is preserved and bit depth (16, 24 or 32-bit) is matched. If the
   source depth can't be detected, the app rounds *up*, never down.
 - **Compatibility formats** (optional) — pick *CDJ: max 24-bit / 48 kHz* for CDJ-2000NXS,

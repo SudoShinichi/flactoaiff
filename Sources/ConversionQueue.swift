@@ -35,8 +35,8 @@ final class ConversionQueue: ObservableObject {
     func enqueueWatched(_ files: [URL], root watchRoot: URL, quietSkips: Bool = false) {
         guard !files.isEmpty else { return }
         for file in files where unfinishedWatched[file] == nil {
-            let values = try? file.resourceValues(forKeys: [.addedToDirectoryDateKey, .creationDateKey])
-            unfinishedWatched[file] = values?.addedToDirectoryDate ?? values?.creationDate ?? Date()
+            // The date catch-up tests, so watchedUntil can't fall back past what it would find.
+            unfinishedWatched[file] = FolderWatcher.arrivalDate(of: file, under: watchRoot) ?? Date()
         }
         submit(quietSkips: quietSkips) { root in Jobs.watched(files, root: watchRoot, into: root) }
     }
@@ -62,6 +62,9 @@ final class ConversionQueue: ObservableObject {
             }
         }
     }
+
+    /// The watch folder changed or watching stopped: its files no longer hold catch-up back.
+    func forgetWatched() { unfinishedWatched = [:] }
 
     func clear() {
         guard !isWorking else { return }

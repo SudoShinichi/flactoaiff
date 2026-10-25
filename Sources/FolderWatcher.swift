@@ -28,7 +28,7 @@ final class FolderWatcher {
         let modified: TimeInterval
         static let unseen = Snapshot(size: -1, modified: 0)
     }
-    private var pending: [String: (snap: Snapshot, quiet: Bool)] = [:]
+    private var pending: [String: (snap: Snapshot, quiet: Bool, stablePolls: Int)] = [:]
     /// Files handed off, by file system ID: a rename or move inside the volume keeps the ID,
     /// so re-sorting converted albums doesn't convert them again. `path` is where it was last
     /// seen, for forgetting files that are gone.
@@ -140,30 +140,33 @@ final class FolderWatcher {
     }
 
     private func track(_ path: String, quiet: Bool) {
-        if pending[path] == nil { pending[path] = (.unseen, quiet) }
+        if pending[path] == nil { pending[path] = (.unseen, quiet, 0) }
     }
 
     /// FLACs under `dir` that arrived at or after `since`: the file's own Finder "Date Added",
     /// or that of a folder between it and `root` (a folder moved in keeps its files' old dates).
     /// Volumes without Date Added (exFAT, FAT) fall back to the creation date.
     private func arrivals(under dir: URL, since: Date) -> [URL] {
-        var folderArrived: [String: Bool] = [:]
-        func arrived(_ url: URL) -> Bool {
+        Jobs.flacs(in: dir).map { dir.appendingPathComponent($0) }.filter { file in
+            !cancelled.isSet && (Self.arrivalDate(of: file, under: root) ?? .distantPast) >= since
+        }
+    }
+
+    /// When `file` arrived in the watch folder `root`: the newest Finder "Date Added" of the
+    /// file and of the folders between it and `root` (a folder moved in keeps its files' old
+    /// dates), never later than now. Volumes without Date Added (exFAT, FAT) use the creation date.
+    static func arrivalDate(of file: URL, under root: URL) -> Date? {
+        func added(_ url: URL) -> Date? {
             let values = try? url.resourceValues(forKeys: [.addedToDirectoryDateKey, .creationDateKey])
-            guard let date = values?.addedToDirectoryDate ?? values?.creationDate else { return false }
-            return date >= since
+            return values?.addedToDirectoryDate ?? values?.creationDate
         }
-        return Jobs.flacs(in: dir).map { dir.appendingPathComponent($0) }.filter { file in
-            if cancelled.isSet { return false }
-            if arrived(file) { return true }
-            var folder = file.deletingLastPathComponent()
-            while folder.path.hasPrefix(root.path + "/") {
-                if folderArrived[folder.path] == nil { folderArrived[folder.path] = arrived(folder) }
-                if folderArrived[folder.path]! { return true }
-                folder = folder.deletingLastPathComponent()
-            }
-            return false
+        var newest = added(file)
+        var folder = file.deletingLastPathComponent()
+        while folder.path.hasPrefix(root.path + "/") {
+            if let date = added(folder), date > newest ?? .distantPast { newest = date }
+            folder = folder.deletingLastPathComponent()
         }
+        return newest.map { min($0, Date()) }
     }
 
     /// Hidden components, or a package (e.g. an .app) anywhere between `root` and `path`.
@@ -191,10 +194,13 @@ final class FolderWatcher {
             guard stat(path, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else { pending[path] = nil; continue }
             let snap = Snapshot(size: Int64(st.st_size),
                                 modified: TimeInterval(st.st_mtimespec.tv_sec) + TimeInterval(st.st_mtimespec.tv_nsec) / 1e9)
+            let stable = snap == entry.snap ? entry.stablePolls + 1 : 0
+            // A future mtime (a wrong clock on the copy's source, a NAS running ahead) can't
+            // show the file's age, so it has to stay unchanged for three polls instead.
+            let settled = now - snap.modified >= 2 ? stable >= 1 : snap.modified > now && stable >= 3
             // Empty: a placeholder (Firefox creates one, then renames the download over it).
-            // A future mtime (a copy from a device with a wrong clock) isn't being written to.
-            guard snap == entry.snap, snap.size > 0, now - snap.modified >= 2 || snap.modified > now else {
-                pending[path] = (snap, entry.quiet); continue
+            guard snap.size > 0, settled else {
+                pending[path] = (snap, entry.quiet, stable); continue
             }
             pending[path] = nil
             // Already handed off (a repeated event, or the file was renamed or moved since):

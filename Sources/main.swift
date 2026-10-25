@@ -345,6 +345,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         watcher?.stop()
         watcher = nil
         watchGeneration += 1
+        queue.forgetWatched()
         guard let folder = folder else { return }
         let root = FolderWatcher.resolve(folder)
         let generation = watchGeneration
