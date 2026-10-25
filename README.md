@@ -85,7 +85,7 @@ were added with.
 | Format | Output |
 | --- | --- |
 | **Original** (default) | Lossless: same sample rate and bit depth (16 or 24-bit) as the source |
-| **CDJ: max 24-bit / 48 kHz** | Higher sample rates are resampled to the same family (96 → 48 kHz, 88.2 → 44.1 kHz), and depth is capped at 24-bit |
+| **CDJ: max 24-bit / 48 kHz** | Higher sample rates are resampled to the same family (96 → 48 kHz, 88.2 → 44.1 kHz); bit depth is kept |
 | **CD: 16-bit / 44.1 kHz** | Resampled and dithered to CD format |
 
 Files that already fit a format are converted unchanged. For example, a 16-bit/44.1 kHz FLAC
