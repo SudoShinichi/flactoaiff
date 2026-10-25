@@ -12,7 +12,6 @@ struct Tags {
     var comments: [(key: String, value: String)] = []
     var pictures: [Picture] = []
 
-    var isEmpty: Bool { comments.isEmpty && pictures.isEmpty }
 
     /// All values for `key`, joined — e.g. several ARTIST entries → "A, B".
     func value(_ key: String) -> String? {
@@ -194,8 +193,6 @@ enum TagIO {
     }
 
     /// Build a complete ID3v2.3 tag (header + frames), or nil if there is nothing to write.
-    static func id3v23(_ tags: Tags) -> Data? { id3v23(id3Frames(tags)) }
-
     static func id3v23(_ frames: [ID3Frame]) -> Data? {
         var body = Data()
         for f in frames {
@@ -268,7 +265,9 @@ enum TagIO {
             } else if header.prefix(4) == Data("SSND".utf8) {
                 let d = fh.readData(ofLength: 8)
                 guard size >= 8, d.count == 8 else { return nil }
-                sound = (start + 8 + be(d[(d.startIndex + 0)..<(d.startIndex + 4)]), size - 8)
+                let offset = be(d[(d.startIndex + 0)..<(d.startIndex + 4)])   // block-alignment padding, usually 0
+                guard size >= 8 + offset else { return nil }
+                sound = (start + 8 + offset, size - 8 - offset)
             }
             guard (try? fh.seek(toOffset: start + size + size % 2)) != nil else { break }
         }

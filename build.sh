@@ -22,7 +22,9 @@ swiftc -O \
     -framework AppKit -framework SwiftUI
 
 # The plist claims macOS 12; make that claim self-enforcing.
-MINOS="$(otool -l "$APP_STAGE/Contents/MacOS/FlacToAiff" | awk '/minos/{print $2; exit}')"
+# Capture first: awk exiting early would SIGPIPE otool and, under pipefail, end the build silently.
+LOADCMDS="$(otool -l "$APP_STAGE/Contents/MacOS/FlacToAiff")"
+MINOS="$(awk '/minos/{print $2; exit}' <<<"$LOADCMDS")"
 [ "$MINOS" = "12.0" ] || { echo "FAIL: binary minos=$MINOS, plist claims 12.0"; exit 1; }
 
 echo "Rendering icon…"

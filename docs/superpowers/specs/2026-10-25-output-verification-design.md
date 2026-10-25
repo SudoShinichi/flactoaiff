@@ -76,7 +76,7 @@ afconvert → length check → append ID3 → **verify** → publish. Verificati
 ## Testing (in `test.sh`, end-to-end through the CLI)
 - All existing conversions pass verification, so the current 28 checks double as "no false alarms" tests. That covers 16/24-bit, the resampled modes and tagged files with non-ASCII text and artwork.
 - **Audio mismatch:** a FLAC whose STREAMINFO MD5 has been altered (patch bytes in the header) must fail with the audio message, and publish nothing.
-- **Tag mismatch:** how to provoke one is left to the builder. A failure hook that is active only in tests is acceptable if it is clearly fenced off, but a real-input trigger is preferred.
+- **Tag mismatch:** how to provoke one is left to the builder. A failure hook that is active only in tests is acceptable if it is clearly fenced off, but a real-input trigger is preferred. *(As built: `FLACTOAIFF_TEST_DAMAGE=format|tags` is compiled in only with `-D TEST_HOOKS`, which `test.sh` uses for its own test binary. The app ignores the variable, as check 35 confirms.)*
 - **A 20-bit source** in Original mode verifies (shift handling).
 
 ## Left to the builder

@@ -11,6 +11,11 @@ BIN="build/FlacToAiff.app/Contents/MacOS/FlacToAiff"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# Failure paths real files can't reach are driven by FLACTOAIFF_TEST_DAMAGE, which only a
+# binary compiled with -D TEST_HOOKS reads; the app itself never does (check 35).
+HOOKBIN="$TMP/FlacToAiff-testhooks"
+swiftc -O -target arm64-apple-macos12.0 -D TEST_HOOKS -o "$HOOKBIN" Sources/*.swift -framework AppKit -framework SwiftUI
+
 echo "1. Synthesize 24-bit source and encode to FLAC…"
 say -o "$TMP/tone.aiff" --data-format=BEI24@44100 "test tone for flac conversion"
 afconvert -f flac -d flac "$TMP/tone.aiff" "$TMP/tone.flac"
@@ -392,7 +397,7 @@ dd if=/dev/zero of="$TMP/nomd5.flac" bs=1 seek=26 count=16 conv=notrunc 2>/dev/n
 [ "$("$BIN" --convert "$TMP/nomd5.flac" "$V1")" = "OK $V1/nomd5.aiff${TAB}format checked" ] || { echo "FAIL: zero MD5 should be format checked"; exit 1; }
 [ "$("$BIN" --convert --format max48 "$TMP/hr96.flac" "$TMP/v3")" = "OK $TMP/v3/hr96.aiff${TAB}format checked" ] || { echo "FAIL: resampled should be format checked"; exit 1; }
 
-set +e; FLACTOAIFF_TEST_DAMAGE=format "$BIN" --convert "$TMP/tone.flac" "$TMP/v4" >/dev/null 2>"$TMP/v.err"; RC=$?; set -e
+set +e; FLACTOAIFF_TEST_DAMAGE=format "$HOOKBIN" --convert "$TMP/tone.flac" "$TMP/v4" >/dev/null 2>"$TMP/v.err"; RC=$?; set -e
 [ "$RC" -eq 1 ] && grep -q "Output format is wrong" "$TMP/v.err" || { echo "FAIL: format damage not refused"; cat "$TMP/v.err"; exit 1; }
 [ ! -e "$TMP/v4/tone.aiff" ] && ! ls -A "$TMP/v4" 2>/dev/null | grep -q "\.partial$" || { echo "FAIL: output or .partial left after format refusal"; exit 1; }
 
@@ -403,7 +408,7 @@ tag_flac "$TMP/tone.flac" "$TMP/full.flac" 'GENRE=(13)' BPM=128 INITIALKEY=Am 'C
 [ "$("$BIN" --convert "$TMP/full.flac" "$TMP/t1")" = "OK $TMP/t1/full.aiff${TAB}verified" ] || { echo "FAIL: fully tagged FLAC not verified"; exit 1; }
 tag_flac "$TMP/hr96.flac" "$TMP/fullhr.flac" BPM=128 PICTURE=1
 [ "$("$BIN" --convert --format max48 "$TMP/fullhr.flac" "$TMP/t2")" = "OK $TMP/t2/fullhr.aiff${TAB}tags verified" ] || { echo "FAIL: resampled tagged FLAC not 'tags verified'"; exit 1; }
-set +e; FLACTOAIFF_TEST_DAMAGE=tags "$BIN" --convert "$TMP/full.flac" "$TMP/t3" >/dev/null 2>"$TMP/v.err"; RC=$?; set -e
+set +e; FLACTOAIFF_TEST_DAMAGE=tags "$HOOKBIN" --convert "$TMP/full.flac" "$TMP/t3" >/dev/null 2>"$TMP/v.err"; RC=$?; set -e
 [ "$RC" -eq 1 ] && grep -q "Tag check failed: artwork" "$TMP/v.err" || { echo "FAIL: tag damage not refused"; cat "$TMP/v.err"; exit 1; }
 [ ! -e "$TMP/t3/full.aiff" ] && ! ls -A "$TMP/t3" 2>/dev/null | grep -q "\.partial$" || { echo "FAIL: output or .partial left after tag refusal"; exit 1; }
 
@@ -475,6 +480,10 @@ sleep 3
 kill $WATCHER; wait $WATCHER 2>/dev/null || true
 [ "$(grep -c '^OK' "$TMP/watch4.log")" -eq 2 ] || { echo "FAIL: renames or a package produced conversions"; cat "$TMP/watch4.log"; exit 1; }
 [ ! -e "$O4/Plug.bundle" ] || { echo "FAIL: package contents converted"; exit 1; }
+
+echo "35. The app itself ignores the test-only damage hooks…"
+OUT35="$(FLACTOAIFF_TEST_DAMAGE=format "$BIN" --convert "$TMP/tone.flac" "$TMP/nohook" 2>&1 || true)"
+[ "$OUT35" = "OK $TMP/nohook/tone.aiff${TAB}verified" ] || { echo "FAIL: the app binary honours FLACTOAIFF_TEST_DAMAGE: $OUT35"; exit 1; }
 
 echo
 echo "PASS: all checks."

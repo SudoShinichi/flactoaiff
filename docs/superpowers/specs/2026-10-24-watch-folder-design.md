@@ -22,7 +22,8 @@ New FLACs (Bandcamp/Beatport downloads, unzipped albums) should become AIFFs wit
 - **Folders moved in:** an event for a directory flagged Created or Renamed scans it for FLACs.
 - **Finished-file check:** a candidate is polled every second. It is ready once it is non-empty (Firefox first creates an empty placeholder), its size and modification time are unchanged since the previous poll, and the modification time is at least 2 s old. A candidate that disappears is dropped.
 - **Stalled writers:** a writer can pause for more than 2 s (slow network or USB copy, `curl`). `Converter` therefore checks every output's frame count against the FLAC's STREAMINFO total. Resampled lengths are expected within ±2 frames. On a mismatch it fails with `FLAC is incomplete — only N% of the audio is there` and publishes nothing. When the file changes again its size and modification time differ from what was handed off, so it is handed off again. The check also protects drops.
-- **No double work:** a file handed off is remembered by path + size + modification time, and repeated events for it are ignored.
+- **No double work:** a file handed off is remembered by its file system ID (device + inode) together with its size and modification time. Repeated events are ignored, and so are renames or moves of it within the volume. A browser download renamed to `.flac` (`.crdownload`, `.part`) was never handed off, so it still converts. Packages moved in (an `.app`, Safari's `.download`) are skipped as a whole.
+- **Clock skew:** a file whose modification time is in the future is ready once it is stable for one poll.
 - **Dropped events:** on `MustScanSubDirs`, the given folder is rescanned. Only files that arrived since watching started are queued, using the catch-up rule below.
 - **Output path:** `<Save to>/<subpath relative to the watch folder>/<name>.aiff`. Settings are read at the moment the file is handed off.
 - **Catch-up at launch:** FLACs are found by the same finished-file check, and their "Already converted" results stay quiet. A FLAC counts if its Finder "Date Added" is on or after `watchedUntil − 2 min`, or if that is true of any folder between it and the watch folder (a folder moved in keeps its files' old dates). Without Date Added (exFAT/FAT), the creation date is used. The 2 minutes cover files that were still settling at quit.
@@ -30,7 +31,11 @@ New FLACs (Bandcamp/Beatport downloads, unzipped albums) should become AIFFs wit
 - **Stopping:** `stop()` invalidates the stream on the watcher's own queue, and no `onReady` follows it. AppDelegate also drops batches from a watcher it has replaced or stopped.
 - **Watch folder missing** (renamed, unplugged): the settings bar shows `Watch folder not available`. Watching restarts when a folder is chosen again, or at the next launch.
 - The watch folder may contain or equal the Save to folder: outputs are `.aiff` and temp files are hidden, so they never trigger conversions.
-- **Known limitations:** moving or renaming FLACs inside the watch folder counts as an arrival and converts them. A tag edit on an already-converted FLAC adds an "Already converted" row and doesn't update the AIFF.
+- **Catch-up never skips unconverted files:** `watchedUntil` stays at or before the arrival of any watched FLAC that hasn't converted yet: still queued at quit, or failed because Save to was unavailable. Those are tried again at the next launch.
+- **Known limitations:**
+  - Renaming FLACs that were already there before watching started (never handed off) counts as an arrival and converts them.
+  - On exFAT, file IDs aren't stable across renames, so renames there convert again.
+  - A tag edit on an already-converted FLAC adds an "Already converted" row and doesn't update the AIFF.
 
 ## UI
 A settings-bar row under Save to: `Watch: Off ▾`, or `Watch: <folder name> ▾`. Its menu has `Choose Folder…` and `Stop Watching`. The tooltip shows the full path. The empty drop zone adds `Watching <folder>` when a folder is set.

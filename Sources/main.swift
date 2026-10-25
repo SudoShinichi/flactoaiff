@@ -336,7 +336,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) { recordWatchedUntil() }
 
     private func recordWatchedUntil() {
-        if watcher != nil { settings.watchedUntil = Date() }
+        guard watcher != nil else { return }
+        settings.watchedUntil = min(Date(), queue.oldestUnfinishedWatched ?? .distantFuture)
     }
 
     /// (Re)start the watcher for `folder`; nil stops watching.

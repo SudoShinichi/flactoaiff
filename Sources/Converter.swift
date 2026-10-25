@@ -126,11 +126,12 @@ enum Converter {
 
         let createdDirs = try createDirectories(destDir)
         do {
-            removeStalePartials(in: destDir)
+            removeStalePartialsOnce(in: destDir)
             let tmp = try reserveTemp(in: destDir)
             do {
-                let source = probe(flacURL)
+                // STREAMINFO is exact; afinfo is the fallback, as it guesses 24-bit when unsure.
                 let streamInfo = TagIO.flacStreamInfo(flacURL)
+                let source = streamInfo.map { SourceFormat(depth: $0.bitsPerSample, rate: $0.rate) } ?? probe(flacURL)
                 let format = outputFormat(for: source, mode: options.mode)
                 var args = ["-f", "AIFF"]
                 if let rate = format.rate {
@@ -150,10 +151,7 @@ enum Converter {
                     try TagIO.appendID3Chunk(tag, to: tmp)
                 }
 
-                let lossless = format.rate == nil && !format.dither
-                    && (streamInfo?.bitsPerSample ?? Int.max) <= format.depth
-                let checks = try Verifier.verify(aiff: tmp, source: streamInfo, expected: format, lossless: lossless,
-                                                writtenFrames: frames)
+                let checks = try Verifier.verify(aiff: tmp, source: streamInfo, expected: format, writtenFrames: frames)
 
                 guard try publish(tmp, as: final) else {
                     try? FileManager.default.removeItem(at: tmp)
@@ -231,6 +229,15 @@ enum Converter {
                 throw ConvertError.saveFailed("Could not write to \(dir.path): \(String(cString: strerror(e)))")
             }
         }
+    }
+
+    private static var cleanedDirs = Set<String>()   // under counterLock
+
+    /// Crash leftovers only appear between runs, so listing a folder once per process is
+    /// enough: a 500-file drop into a big folder would otherwise list it 500 times.
+    private static func removeStalePartialsOnce(in dir: URL) {
+        counterLock.lock(); let first = cleanedDirs.insert(dir.standardizedFileURL.path).inserted; counterLock.unlock()
+        if first { removeStalePartials(in: dir) }
     }
 
     /// Delete `.flactoaiff.<pid>.<n>.partial` files whose process is gone (crash leftovers).
