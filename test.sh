@@ -485,5 +485,15 @@ echo "35. The app itself ignores the test-only damage hooks…"
 OUT35="$(FLACTOAIFF_TEST_DAMAGE=format "$BIN" --convert "$TMP/tone.flac" "$TMP/nohook" 2>&1 || true)"
 [ "$OUT35" = "OK $TMP/nohook/tone.aiff${TAB}verified" ] || { echo "FAIL: the app binary honours FLACTOAIFF_TEST_DAMAGE: $OUT35"; exit 1; }
 
+echo "36. A 32-bit FLAC, which macOS can't decode, fails with a clear reason in every format…"
+swiftc -O -o "$TMP/make-flac32" scripts/make-flac32.swift
+"$TMP/make-flac32" "$TMP/s32.flac"
+for m in original max48 cd; do
+    set +e; "$BIN" --convert --format "$m" "$TMP/s32.flac" "$TMP/s32-$m" 2>"$TMP/s32.err"; RC=$?; set -e
+    [ "$RC" -eq 1 ] && grep -q "can't decode 32-bit FLAC" "$TMP/s32.err" \
+        || { echo "FAIL: $m: 32-bit FLAC not refused clearly"; cat "$TMP/s32.err"; exit 1; }
+    [ -z "$(ls -A "$TMP/s32-$m" 2>/dev/null)" ] || { echo "FAIL: $m: 32-bit FLAC left files behind"; ls -A "$TMP/s32-$m"; exit 1; }
+done
+
 echo
 echo "PASS: all checks."
