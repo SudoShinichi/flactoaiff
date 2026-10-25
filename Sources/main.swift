@@ -148,7 +148,7 @@ struct DropView: View {
                     Text(settings.watchFolder?.lastPathComponent ?? "Off")
                 }
                 .fixedSize()
-                .help(settings.watchFolder?.path ?? "Convert new FLACs that land in a folder, while the app is open")
+                .help(settings.watchFolder?.path ?? "Convert new \(AudioSources.names) files that land in a folder, while the app is open")
                 if settings.watchFolder != nil && watchState.unavailable {
                     Text("Watch folder not available").font(.caption).foregroundColor(.red)
                 }
@@ -184,7 +184,7 @@ struct DropView: View {
                 VStack(spacing: 8) {
                     Image(systemName: "arrow.down.circle")
                         .font(.system(size: 44, weight: .light))
-                    Text(queue.isWorking ? "Converting…" : "Drop .flac files or folders here")
+                    Text(queue.isWorking ? "Converting…" : "Drop \(AudioSources.names) files or folders here")
                         .font(.headline)
                     Text("Converted .aiff files are saved to \(settings.outputFolder.lastPathComponent)")
                         .font(.caption)

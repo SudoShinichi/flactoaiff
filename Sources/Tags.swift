@@ -7,7 +7,8 @@ struct Picture: Equatable {
     let data: Data
 }
 
-/// Tags read from a FLAC: Vorbis comments (keys upper-cased, repeats kept in order) + pictures.
+/// Tags read from a source, as Vorbis comments (keys upper-cased, repeats kept in order) +
+/// pictures. Other formats' tags are mapped onto the same keys.
 struct Tags {
     var comments: [(key: String, value: String)] = []
     var pictures: [Picture] = []
@@ -35,6 +36,20 @@ struct StreamInfo {
     let channels: Int
     let bitsPerSample: Int
     let md5: Data?   // MD5 of the decoded samples; nil when the encoder left it all zero
+}
+
+/// Where a WAV's audio and tags are, and what its fmt chunk declares.
+struct WavLayout {
+    enum Encoding { case pcm, float, compressed }
+    let encoding: Encoding
+    let channels: Int
+    let rate: Int
+    let blockAlign: Int
+    let bits: Int                 // the sample container's, so 20-bit audio in 24-bit slots counts as 24
+    let dataOffset: UInt64
+    let dataLength: UInt64?       // nil when the writer left it 0 or 0xFFFFFFFF (streamed, length unknown)
+    let id3: (offset: UInt64, length: UInt64)?
+    let infoList: (offset: UInt64, length: UInt64)?
 }
 
 /// What an AIFF's COMM and SSND chunks declare.
@@ -139,6 +154,161 @@ enum TagIO {
         return Picture(type: UInt8(clamping: type),
                        mime: String(data: mime, encoding: .ascii) ?? "image/jpeg",
                        data: data)
+    }
+
+    // MARK: - WAV reading
+
+    /// The chunks of a RIFF/WAVE file, or nil when it isn't one (an RF64 file, say: afinfo and
+    /// afconvert take over). Chunks after a data chunk of unknown length can't be found.
+    static func wavLayout(_ url: URL) -> WavLayout? {
+        guard let fh = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? fh.close() }
+        let riff = fh.readData(ofLength: 12)
+        guard riff.count == 12, riff.prefix(4) == Data("RIFF".utf8), riff.suffix(4) == Data("WAVE".utf8),
+              let fileSize = try? fh.seekToEnd() else { return nil }
+        func le(_ d: Data) -> UInt64 { d.reversed().reduce(0) { $0 << 8 | UInt64($1) } }
+        var fmt: Data?, data: (offset: UInt64, length: UInt64?)?
+        var id3: (offset: UInt64, length: UInt64)?, infoList: (offset: UInt64, length: UInt64)?
+        var pos: UInt64 = 12
+        while pos + 8 <= fileSize, (try? fh.seek(toOffset: pos)) != nil {
+            let h = fh.readData(ofLength: 8)
+            guard h.count == 8 else { break }
+            let id = String(decoding: h.prefix(4), as: UTF8.self), size = le(h.suffix(4)), body = pos + 8
+            switch id {
+            case "fmt ": fmt = fh.readData(ofLength: Int(min(size, 64)))
+            case "data":
+                let known = size != 0 && size != 0xFFFF_FFFF
+                data = (body, known ? size : nil)
+                if !known { pos = fileSize; continue }   // the rest of the file is audio
+            case "id3 ", "ID3 ": id3 = (body, size)
+            case "LIST":
+                if fh.readData(ofLength: 4) == Data("INFO".utf8), size >= 4 { infoList = (body + 4, size - 4) }
+            default: break
+            }
+            pos = body + size + size % 2   // chunks are padded to even length
+        }
+        guard let fmt, fmt.count >= 16, let data else { return nil }
+        let f = fmt.startIndex
+        var tag = le(fmt[f..<(f + 2)])
+        if tag == 0xFFFE, fmt.count >= 26 { tag = le(fmt[(f + 24)..<(f + 26)]) }   // EXTENSIBLE: the sub-format GUID's first two bytes
+        let channels = Int(le(fmt[(f + 2)..<(f + 4)])), rate = Int(le(fmt[(f + 4)..<(f + 8)]))
+        let blockAlign = Int(le(fmt[(f + 12)..<(f + 14)]))
+        guard channels > 0, rate > 0, blockAlign > 0, blockAlign % channels == 0 else { return nil }
+        return WavLayout(encoding: tag == 1 ? .pcm : tag == 3 ? .float : .compressed,
+                         channels: channels, rate: rate, blockAlign: blockAlign, bits: blockAlign / channels * 8,
+                         dataOffset: data.offset, dataLength: data.length, id3: id3, infoList: infoList)
+    }
+
+    /// A WAV's tags: its ID3 chunk (as store downloads carry), and LIST/INFO for keys the ID3 lacks.
+    static func readWavTags(_ url: URL, _ layout: WavLayout) -> Tags {
+        var tags = Tags()
+        guard let fh = try? FileHandle(forReadingFrom: url) else { return tags }
+        defer { try? fh.close() }
+        func chunk(_ c: (offset: UInt64, length: UInt64)) -> Data? {
+            guard c.length < 64 << 20, (try? fh.seek(toOffset: c.offset)) != nil else { return nil }
+            return fh.readData(ofLength: Int(c.length))
+        }
+        if let id3 = layout.id3, let d = chunk(id3) { parseID3(d, into: &tags) }
+        if let list = layout.infoList, let d = chunk(list) {
+            var r = Reader(d)
+            while let id = r.bytes(4), let size = r.u32le(), let body = r.bytes(Int(size)) {
+                if size % 2 == 1 { _ = r.skip(1) }
+                guard let key = infoKeys[String(decoding: id, as: UTF8.self)], tags.value(key) == nil else { continue }
+                let bytes = body.prefix { $0 != 0 }
+                // INFO is nominally Latin-1; most writers today put UTF-8 there.
+                guard let value = String(data: bytes, encoding: .utf8) ?? String(data: bytes, encoding: .isoLatin1),
+                      !value.isEmpty else { continue }
+                tags.comments.append((key, value))
+            }
+        }
+        return tags
+    }
+
+    private static let infoKeys = [
+        "INAM": "TITLE", "IART": "ARTIST", "IPRD": "ALBUM", "IGNR": "GENRE", "ICRD": "DATE",
+        "ITRK": "TRACKNUMBER", "IPRT": "TRACKNUMBER", "ICMT": "COMMENT", "ICOP": "COPYRIGHT",
+    ]
+
+    // MARK: - ID3v2 reading
+
+    /// ID3 text frame → tag key: the reverse of `textFrames`, plus the frames written apart from it.
+    private static let id3Keys: [String: String] = {
+        var keys = ["TYER": "DATE", "TDRC": "DATE", "TRCK": "TRACKNUMBER", "TPOS": "DISCNUMBER"]
+        for (vorbis, frame) in textFrames where keys[frame] == nil { keys[frame] = vorbis }
+        return keys
+    }()
+
+    /// Read an ID3v2.3 or v2.4 tag into `tags`: known text frames, TXXX, COMM and APIC.
+    /// Anything it can't read safely (v2.2, unsynchronised or compressed frames) is left out.
+    static func parseID3(_ tag: Data, into tags: inout Tags) {
+        var r = Reader(tag)
+        guard let head = r.bytes(10), head.prefix(3) == Data("ID3".utf8) else { return }
+        let h = head.startIndex, version = head[h + 3], flags = head[h + 5]
+        guard version == 3 || version == 4, flags & 0x80 == 0 else { return }
+        func syncsafe(_ d: Data) -> Int { d.reduce(0) { $0 << 7 | Int($1 & 0x7F) } }
+        let end = min(tag.startIndex + 10 + syncsafe(head[(h + 6)..<(h + 10)]), tag.endIndex)
+        var frames = Reader(tag[(tag.startIndex + 10)..<end])
+        if flags & 0x40 != 0 {   // extended header: v2.3 counts its size without itself, v2.4 with
+            guard let size = frames.bytes(4) else { return }
+            _ = frames.skip(version == 3 ? Int(size.reduce(0) { $0 << 8 | UInt32($1) }) : syncsafe(size) - 4)
+        }
+        while let idBytes = frames.bytes(4), idBytes.first != 0, let sizeBytes = frames.bytes(4),
+              let frameFlags = frames.bytes(2) {
+            let size = version == 4 ? syncsafe(sizeBytes) : Int(sizeBytes.reduce(0) { $0 << 8 | UInt32($1) })
+            guard var body = frames.bytes(size) else { return }
+            let format = frameFlags[frameFlags.startIndex + 1]
+            if version == 3 ? format & 0xC0 != 0 : format & 0x0E != 0 { continue }   // compressed, encrypted, unsynchronised
+            if version == 4 && format & 0x01 != 0 { body = body.dropFirst(4) }       // data length indicator
+            guard let encoding = body.first else { continue }
+            let id = String(decoding: idBytes, as: UTF8.self), text = body.dropFirst()
+            switch id {
+            case "TXXX":
+                guard let (description, value) = terminated(text, encoding),
+                      let key = id3String(description, encoding)?.uppercased(), !key.isEmpty else { continue }
+                for v in id3Strings(value, encoding) { tags.comments.append((key, v)) }
+            case "COMM":
+                // Language, short description, text. A described one (iTunNORM…) is player data.
+                guard text.count > 3, let (description, value) = terminated(text.dropFirst(3), encoding),
+                      id3String(description, encoding)?.isEmpty ?? true else { continue }
+                for v in id3Strings(value, encoding) { tags.comments.append(("COMMENT", v)) }
+            case "APIC":
+                guard let mimeEnd = text.firstIndex(of: 0), mimeEnd + 1 < text.endIndex else { continue }
+                let mime = String(decoding: text[text.startIndex..<mimeEnd], as: UTF8.self)
+                let type = text[mimeEnd + 1]
+                guard let (_, data) = terminated(text[(mimeEnd + 2)...], encoding), !data.isEmpty else { continue }
+                tags.pictures.append(Picture(type: type, mime: mime.isEmpty ? "image/jpeg" : mime, data: Data(data)))
+            default:
+                guard let key = id3Keys[id] else { continue }
+                for v in id3Strings(text, encoding) { tags.comments.append((key, v)) }
+            }
+        }
+    }
+
+    /// Split at the first terminator of `encoding` (one NUL, or two aligned NULs for UTF-16).
+    private static func terminated(_ d: Data, _ encoding: UInt8) -> (Data, Data)? {
+        if encoding == 1 || encoding == 2 {
+            var i = d.startIndex
+            while i + 1 < d.endIndex { if d[i] == 0 && d[i + 1] == 0 { return (d[d.startIndex..<i], d[(i + 2)...]) }; i += 2 }
+            return nil
+        }
+        guard let i = d.firstIndex(of: 0) else { return nil }
+        return (d[d.startIndex..<i], d[(i + 1)...])
+    }
+
+    private static func id3String(_ d: Data, _ encoding: UInt8) -> String? {
+        switch encoding {
+        case 0: return String(data: d, encoding: .isoLatin1)
+        case 1: return d.isEmpty ? "" : String(data: d, encoding: .utf16)
+        case 2: return String(data: d, encoding: .utf16BigEndian)
+        case 3: return String(data: d, encoding: .utf8)
+        default: return nil
+        }
+    }
+
+    /// A text frame's values: v2.4 separates several with NULs, each UTF-16 one with its own BOM.
+    private static func id3Strings(_ d: Data, _ encoding: UInt8) -> [String] {
+        guard let s = id3String(d, encoding) else { return [] }
+        return s.split(separator: "\0").map { $0.replacingOccurrences(of: "\u{FEFF}", with: "") }.filter { !$0.isEmpty }
     }
 
     // MARK: - ID3v2.3 building

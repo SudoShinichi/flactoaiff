@@ -4,8 +4,8 @@
 
 # FlacToAiff
 
-**A native macOS app that converts FLAC to AIFF, keeps the tags and artwork, and checks every
-file against the FLAC before saving it.**
+**A native macOS app that converts FLAC and WAV to AIFF, keeps the tags and artwork, and checks
+every file against its source before saving it.**
 
 ![macOS 12+](https://img.shields.io/badge/macOS-12%2B-black?logo=apple)
 ![Apple Silicon and Intel](https://img.shields.io/badge/Apple%20Silicon%20%2B%20Intel-universal-black)
@@ -24,8 +24,9 @@ FLAC is the usual format for lossless downloads, but not everything plays it:
 - **Apple Music** can't import FLAC.
 - **Older CDJs** don't play it, for example the CDJ-2000NXS.
 
-AIFF is just as lossless, plays nearly everywhere, and carries tags. FlacToAiff makes that
-conversion a drag and drop. If your software and players all handle FLAC (rekordbox, Serato,
+WAV plays nearly everywhere, but its tags are poorly supported, so DJ software often shows only
+the file name. AIFF is just as lossless, plays nearly everywhere, and carries tags. FlacToAiff
+makes that conversion a drag and drop. If your software and players all handle FLAC (rekordbox, Serato,
 the CDJ-3000 and CDJ-2000NXS2 do), you may not need it.
 
 ## Features
@@ -38,10 +39,10 @@ the CDJ-3000 and CDJ-2000NXS2 do), you may not need it.
 - **Tags and artwork.** They are written as an ID3v2.3 tag, the version DJ software reads most
   reliably.
 - **Verified output.** Before an AIFF is saved, its length, format and tags are checked against
-  the FLAC. Lossless conversions are also compared against the FLAC's audio checksum. A file
-  that fails any check is not saved.
-- **Watch folder.** It converts new FLACs that appear in a folder you choose while the app is
-  open.
+  the source. Lossless conversions are also compared sample for sample: against the FLAC's audio
+  checksum, or against the WAV's own samples. A file that fails any check is not saved.
+- **Watch folder.** It converts new FLAC and WAV files that appear in a folder you choose while
+  the app is open.
 - **Careful with your files.**
   - Existing files are never overwritten.
   - An unfinished AIFF never appears under its final name.
@@ -67,10 +68,10 @@ binary.
 
 ## Usage
 
-Open FlacToAiff and drag `.flac` files or folders onto the window. The AIFFs are written to the
+Open FlacToAiff and drag `.flac` or `.wav` files or folders onto the window. The AIFFs are written to the
 **Save to** folder, which is Downloads by default. You can also drop onto the Dock icon, even
-while the app isn't running, or right-click FLACs in Finder → **Open With → FlacToAiff**.
-FlacToAiff never makes itself the default app for FLAC files.
+while the app isn't running, or right-click files in Finder → **Open With → FlacToAiff**.
+FlacToAiff never makes itself the default app for FLAC or WAV files.
 
 ### Settings
 
@@ -78,7 +79,7 @@ FlacToAiff never makes itself the default app for FLAC files.
 | --- | --- |
 | **Save to** | The folder the AIFFs go to, for example a USB stick. |
 | **Format** | The output format (see the next table). The text under the menu explains each option. |
-| **Watch** | A folder whose new FLACs convert automatically (see [Watch folder](#watch-folder)). |
+| **Watch** | A folder whose new FLAC and WAV files convert automatically (see [Watch folder](#watch-folder)). |
 
 A changed setting applies to the next files you add. Files already queued keep the setting they
 were added with.
@@ -103,28 +104,29 @@ Every file gets a row in the window. The label at the end says what was checked:
 
 | Label | Meaning |
 | --- | --- |
-| `verified` | The audio is bit-for-bit identical to the FLAC (checked against its MD5), and format, length and tags were checked. |
+| `verified` | The audio is bit-for-bit identical to the source (checked against the FLAC's MD5, or the WAV's samples), and format, length and tags were checked. |
 | `tags verified` | Format, length and tags were checked. The audio was resampled or dithered, so it can't be identical, or the FLAC carries no checksum. |
 | `format checked` | Format and length were checked. There were no tags, and the audio couldn't be compared (resampled, or no checksum in the FLAC). |
 | Already converted | This file's AIFF already exists in the output folder. It is left untouched. |
 | Red row | Nothing was saved. The row says why (see [Troubleshooting](#troubleshooting)). |
 
-To convert a track again, for example in a different format, delete its AIFF and add the FLAC
-again.
+To convert a track again, for example in a different format, delete its AIFF and add the source
+file again.
 
 ### Watch folder
 
 Click **Watch** and choose a folder, such as the one your browser downloads into. While the app
-is open, new FLACs that appear there are converted into **Save to**. That includes albums
+is open, new FLAC and WAV files that appear there are converted into **Save to**. That includes albums
 unzipped or moved into the folder, and their subfolders are kept: `Watch/Album/01.flac` becomes
 `Save to/Album/01.aiff`.
 
 - A file is picked up once it has stopped changing for 2 seconds. A download that stalls for
-  longer than that shows an "incomplete" row, then converts once it is complete. A FLAC whose
-  header doesn't record its length (some encoders write it last) waits 30 seconds instead.
-- FLACs that arrive while the app is quit are picked up at the next launch.
+  longer than that shows an "incomplete" row, then converts once it is complete. A file whose
+  header doesn't record its length (some encoders and WAV writers fill it in last) waits 30
+  seconds instead.
+- Files that arrive while the app is quit are picked up at the next launch.
 - Files already in the folder when you start watching are left alone, even if you later rename
-  them, move them within the folder or give them Finder tags. Changing a FLAC's contents, for
+  them, move them within the folder or give them Finder tags. Changing a file's contents, for
   example editing its tags in a tag editor, makes it count as new.
 - If the folder's drive isn't connected, watching starts as soon as it is.
 
@@ -147,17 +149,22 @@ picture show the first. Pictures that are only a web link are left out. The year
 `DATE` in any order, so `2026-03-01` and `03.05.2026` both give 2026. Other tags are kept as
 custom `TXXX` fields. Non-Latin text is preserved.
 
+WAV tags are read from an embedded ID3 tag (ID3v2.3 or v2.4, as store downloads carry) and from
+the `LIST/INFO` chunk (`INAM` title, `IART` artist, `IPRD` album, `IGNR` genre, `ICRD` date,
+`ITRK` track, `ICMT` comment, `ICOP` copyright). Where both have a field, the ID3 tag wins.
+
 ## How it works
 
-1. **Convert.** `afconvert` decodes the FLAC into a hidden temporary file in the output folder.
+1. **Convert.** `afconvert` decodes the source into a hidden temporary file in the output folder.
    Lossless output uses `afconvert -f AIFF -d BEI<depth>`. Resampling adds
    `-r 127 --src-complexity bats` (highest quality). Bit-depth reduction in CD mode adds TPDF
    dither.
-2. **Tag.** `afconvert` copies audio only, so FlacToAiff reads the FLAC's metadata blocks and
-   appends an ID3v2.3 chunk.
-3. **Verify.** The FLAC's STREAMINFO header records the track's length and an MD5 of its audio.
+2. **Tag.** `afconvert` copies audio only, so FlacToAiff reads the source's tags (FLAC metadata
+   blocks, or a WAV's ID3 and INFO chunks) and appends an ID3v2.3 chunk.
+3. **Verify.** A FLAC's STREAMINFO header records the track's length and an MD5 of its audio. A
+   WAV's header records the length, and its samples are hashed the same way.
    - The AIFF's length and format must match.
-   - For lossless output, the MD5 of the AIFF's samples must equal the FLAC's.
+   - For lossless output, the MD5 of the AIFF's samples must equal the source's.
    - Every tag and picture must read back identically through AVFoundation, the framework Apple's
      apps use.
 4. **Publish.** The file is renamed into place without replacing anything that exists. On
@@ -167,7 +174,10 @@ custom `TXXX` fields. Non-Latin text is preserved.
 ## Limitations
 
 - **You build it yourself.** There's no signed or notarized release.
-- **FLAC input only.** WAV, ALAC and other formats are skipped.
+- **FLAC and WAV input only.** ALAC and other formats are skipped.
+- **Integer WAV only.** Floating-point WAVs, which some DAWs export, can't become a lossless
+  AIFF and are skipped with a message. Export them as 24-bit WAV. Compressed WAVs (ADPCM, MP3 in
+  WAV) are skipped too.
 - **16, 20 and 24-bit FLAC only.** macOS's FLAC decoder handles nothing else, so rare 8, 12
   or 32-bit FLACs fail with a clear message. Save them as 16 or 24-bit in an audio editor first.
 - **AIFFs from earlier versions don't record their source.** If such a `track.aiff` exists, any
@@ -181,8 +191,8 @@ custom `TXXX` fields. Non-Latin text is preserved.
 
 ## Troubleshooting
 
-**"FLAC is incomplete — only N% of the audio is there".** The FLAC is shorter than its header
-says. It is still being downloaded or copied, or the download broke off. Wait for it to finish,
+**"FLAC is incomplete — only N% of the audio is there"** (or "WAV is incomplete"). The file is
+shorter than its header says. It is still being downloaded or copied, or the download broke off. Wait for it to finish,
 or download it again.
 
 **"macOS can't decode 32-bit FLAC"** (or 8 or 12-bit). macOS only decodes 16, 20 and 24-bit
@@ -191,6 +201,9 @@ FLAC. Save the file as 16 or 24-bit in an audio editor, then add it again.
 **"track.aiff already exists, made from a different file".** Two different files share a name,
 for example `A/track.flac` and `B/track.flac` dropped into the same **Save to** folder. Nothing was
 saved and the existing AIFF is untouched. Rename one of the files and add it again.
+
+**"Skipped — floating-point WAV can't become a lossless AIFF".** The WAV stores 32 or 64-bit
+floating-point samples. Export it from your DAW as 24-bit WAV, then add it again.
 
 **"Audio doesn't match the FLAC's checksum — the FLAC may be damaged".** The decoded audio
 doesn't match the checksum the FLAC was encoded with, so the FLAC file itself is probably
@@ -223,7 +236,7 @@ permission goes to FlacToAiff itself.
 arch -x86_64 ./test.sh          # the same checks on the Intel build, under Rosetta
 ```
 
-`test.sh` rebuilds the app if the sources changed, then runs end-to-end checks on real FLAC files that it generates itself. It covers:
+`test.sh` rebuilds the app if the sources changed, then runs end-to-end checks on real FLAC and WAV files that it generates itself. It covers:
 - bit-depth and sample-rate handling in every format, including the depths macOS can't decode
 - tag and artwork transfer, including unusual tags
 - the verification checks, including tampered and truncated files
@@ -250,9 +263,9 @@ FlacToAiff.app/Contents/MacOS/FlacToAiff --watch   [--format original|max48|cd] 
 | --- | --- |
 | `Sources/main.swift` | Window, settings bar, app delegate, command-line modes |
 | `Sources/Converter.swift` | Output-format choice, `afconvert`, atomic publishing |
-| `Sources/Tags.swift` | FLAC STREAMINFO/tag/picture parsing, ID3 writing, AIFF reading |
+| `Sources/Tags.swift` | FLAC and WAV header and tag parsing, ID3 reading and writing, AIFF reading |
 | `Sources/Verifier.swift` | Length, format, audio checksum and tag checks |
-| `Sources/AudioSource.swift` | Input formats: one type per format (FLAC today) |
+| `Sources/AudioSource.swift` | Input formats: one type per format (FLAC, WAV) |
 | `Sources/Jobs.swift` | Expands dropped files and folders into conversions |
 | `Sources/FolderWatcher.swift` | Watch folder (FSEvents) and launch catch-up |
 | `Sources/ConversionQueue.swift` | Background queue shared by all inputs |

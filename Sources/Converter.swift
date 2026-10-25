@@ -153,7 +153,7 @@ enum Converter {
                     try TagIO.appendID3Chunk(tag, to: tmp)
                 }
 
-                let checks = try Verifier.verify(aiff: tmp, source: streamInfo, expected: format, writtenFrames: frames)
+                let checks = try Verifier.verify(aiff: tmp, input: input, expected: format, writtenFrames: frames)
 
                 guard try publish(tmp, as: final) else {
                     try? FileManager.default.removeItem(at: tmp)

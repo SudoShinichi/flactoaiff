@@ -51,7 +51,7 @@ enum Jobs {
             let folderOut = outputRoot.appendingPathComponent(folderNames.name(for: url), isDirectory: true)
             let files = audioFiles(in: url)
             if files.isEmpty {
-                items.append(.note(name: url.lastPathComponent, message: "No .flac files found"))
+                items.append(.note(name: url.lastPathComponent, message: "No \(AudioSources.names) files found"))
             }
             for rel in files {
                 let subdir = (rel as NSString).deletingLastPathComponent
@@ -126,7 +126,10 @@ enum Jobs {
                                   output: nil, checks: nil, retryable: true)
             guard outputRootAvailable() else { return unavailable }
             guard let source = AudioSources.open(job.source) else {
-                return Row(name: name, kind: .skipped, detail: "Skipped — not a .flac file", output: nil, checks: nil)
+                return Row(name: name, kind: .skipped, detail: "Skipped — not a \(AudioSources.names) file", output: nil, checks: nil)
+            }
+            if let reason = source.skipReason {
+                return Row(name: name, kind: .skipped, detail: reason, output: nil, checks: nil)
             }
             do {
                 switch try Converter.convert(source, destDir: job.destDir, options: options) {

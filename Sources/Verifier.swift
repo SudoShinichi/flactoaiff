@@ -4,7 +4,7 @@ import Foundation
 
 /// What verification covered, shown next to each converted file.
 struct Checks {
-    var audio = false   // decoded samples match the FLAC's own MD5
+    var audio = false   // decoded samples match the source's own checksum
     var tags = false    // the written tags read back as intended
 
     var label: String { audio ? "verified" : tags ? "tags verified" : "format checked" }
@@ -12,8 +12,9 @@ struct Checks {
 
 /// Checks a finished AIFF before it is published. A failure throws, so the caller discards it.
 enum Verifier {
-    static func verify(aiff: URL, source: StreamInfo?, expected: Converter.OutputFormat,
+    static func verify(aiff: URL, input: AudioSource, expected: Converter.OutputFormat,
                        writtenFrames: [ID3Frame]) throws -> Checks {
+        let source = input.info, name = type(of: input).name
         #if TEST_HOOKS   // only test.sh's own build has these; the app never reads the variable
         let damage = ProcessInfo.processInfo.environment["FLACTOAIFF_TEST_DAMAGE"]
         if damage == "format" { damageSampleSize(aiff) }
@@ -32,23 +33,23 @@ enum Verifier {
         }
         if let source {
             guard info.channels == source.channels else { throw wrong("channels", info.channels, source.channels) }
-            // afconvert happily converts a truncated FLAC (a download or copy still being
-            // written), so check the length against STREAMINFO. Resampled lengths are within ±2.
+            // afconvert happily converts a truncated file (a download or copy still being
+            // written), so check the length against the header's. Resampled lengths are within ±2.
             if source.samples > 0 {
                 let want = Double(source.samples) * Double(expected.rate ?? source.rate) / Double(source.rate)
                 guard abs(Double(info.frames) - want) <= 2 else {
                     throw ConvertError.verificationFailed(
-                        "FLAC is incomplete — only \(Int(Double(info.frames) / want * 100))% of the audio is there")
+                        "\(name) is incomplete — only \(Int(Double(info.frames) / want * 100))% of the audio is there")
                 }
             }
         }
 
         var checks = Checks()
         // Lossless: no resampling, no dither, and nothing cut off the source's bit depth.
-        if let source, let md5 = source.md5, expected.rate == nil, !expected.dither,
-           source.bitsPerSample <= expected.depth {
+        if let source, expected.rate == nil, !expected.dither, source.bitsPerSample <= expected.depth,
+           let md5 = input.audioChecksum() {
             guard try audioMD5(aiff, info, sourceBits: source.bitsPerSample) == md5 else {
-                throw audioMismatch
+                throw ConvertError.verificationFailed("Audio doesn't match the \(name)'s checksum — the \(name) may be damaged")
             }
             checks.audio = true
         }
@@ -104,15 +105,13 @@ enum Verifier {
         "TBPM": "BPM", "TKEY": "key", "TYER": "year", "TRCK": "track number", "TPOS": "disc number",
     ]
 
-    private static let audioMismatch = ConvertError.verificationFailed("Audio doesn't match the FLAC's checksum — the FLAC may be damaged")
-
     /// MD5 of the AIFF's samples in FLAC's own form: signed little-endian, ceil(bits/8) bytes
     /// each. A lossless up-conversion only appended zero bits, so shifting them off restores
     /// the source samples (and any non-zero bit there means the audio isn't the FLAC's).
     /// Streams through two reused buffers, so memory stays flat however long the file is —
     /// keep it that way: the GUI converts a whole batch in one go.
-    private static func audioMD5(_ url: URL, _ info: AIFFInfo, sourceBits: Int) throws -> Data {
-        let mismatch = audioMismatch
+    /// nil when the AIFF can't be the source's audio (sound data cut short, padding bits set).
+    private static func audioMD5(_ url: URL, _ info: AIFFInfo, sourceBits: Int) throws -> Data? {
         let fd = open(url.path, O_RDONLY)
         guard fd >= 0 else { throw CocoaError(.fileReadNoSuchFile) }
         defer { close(fd) }
@@ -132,7 +131,7 @@ enum Verifier {
             while got < want {   // pread may return less than asked
                 let n = pread(fd, input + got, want - got, offset + off_t(got))
                 if n < 0 && errno == EINTR { continue }
-                guard n > 0 else { throw mismatch }   // SSND shorter than it claims
+                guard n > 0 else { return nil }   // SSND shorter than it claims
                 got += n
             }
             offset += off_t(got)
@@ -157,7 +156,7 @@ enum Verifier {
                     if outBytes > 1 { u |= UInt32(p[1]) << 16 }
                     if outBytes > 2 { u |= UInt32(p[2]) << 8 }
                     if outBytes > 3 { u |= UInt32(p[3]) }
-                    guard u & lowMask == 0 else { throw mismatch }   // the padding bits must be zero
+                    guard u & lowMask == 0 else { return nil }   // the padding bits must be zero
                     let v = Int32(bitPattern: u) >> Int32(shift)
                     for k in 0..<srcBytes { output[o + k] = UInt8(truncatingIfNeeded: v >> Int32(8 * k)) }
                     o += srcBytes
