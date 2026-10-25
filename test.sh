@@ -212,7 +212,7 @@ ACTUAL="$(cd "$FOLD" && find . -mindepth 1 | sed 's|^\./||' | LC_ALL=C sort)"
 echo "16. Folder without FLACs reports it and creates nothing; several inputs in one call…"
 mkdir -p "$TMP/NoFlacs"; echo x > "$TMP/NoFlacs/readme.txt"
 set +e; "$BIN" --convert "$TMP/NoFlacs" "$FOLD" 2>"$TMP/nf.err"; RC=$?; set -e
-[ "$RC" -eq 1 ] && grep -q "No FLAC or WAV files found" "$TMP/nf.err" || { echo "FAIL: empty folder not reported"; exit 1; }
+[ "$RC" -eq 1 ] && grep -q "No FLAC, WAV or ALAC files found" "$TMP/nf.err" || { echo "FAIL: empty folder not reported"; exit 1; }
 [ ! -e "$FOLD/NoFlacs" ] || { echo "FAIL: empty output folder created"; exit 1; }
 MULTI="$("$BIN" --convert "$TMP/tone.flac" "$TMP/t16.flac" "$TMP/multi" | grep -c '^OK ' || true)"
 [ "$MULTI" -eq 2 ] || { echo "FAIL: expected 2 OK lines for two inputs, got $MULTI"; exit 1; }
@@ -227,13 +227,15 @@ echo "18. App declares FLAC + folders for Dock drops, with rank None (never the 
 PLIST="build/FlacToAiff.app/Contents/Info.plist"
 [ "$(plutil -extract CFBundleDocumentTypes.0.LSItemContentTypes.0 raw "$PLIST" 2>/dev/null)" = "org.xiph.flac" ] \
     || { echo "FAIL: org.xiph.flac not declared"; exit 1; }
-for i in 0 1 2; do
+for i in 0 1 2 3; do
     [ "$(plutil -extract CFBundleDocumentTypes.$i.LSHandlerRank raw "$PLIST")" = "None" ] \
         || { echo "FAIL: document type $i rank is not None (could become the default app)"; exit 1; }
 done
 [ "$(plutil -extract CFBundleDocumentTypes.1.LSItemContentTypes.0 raw "$PLIST")" = "com.microsoft.waveform-audio" ] \
     || { echo "FAIL: WAV not declared"; exit 1; }
-[ "$(plutil -extract CFBundleDocumentTypes.2.LSItemContentTypes.0 raw "$PLIST")" = "public.folder" ] \
+[ "$(plutil -extract CFBundleDocumentTypes.2.LSItemContentTypes.0 raw "$PLIST")" = "com.apple.m4a-audio" ] \
+    || { echo "FAIL: ALAC (.m4a) not declared"; exit 1; }
+[ "$(plutil -extract CFBundleDocumentTypes.3.LSItemContentTypes.0 raw "$PLIST")" = "public.folder" ] \
     || { echo "FAIL: folders not declared"; exit 1; }
 
 echo "19. Converting onto an exFAT volume (typical DJ USB stick) works…"
@@ -720,5 +722,64 @@ wait_log "$W44/watch.log" '^WATCHING ' || { echo "FAIL: --watch never reported i
 cp "$W44/in/LEI16.wav" "$W44W/dl.wav"
 wait_log "$W44/watch.log" "^OK $W44/wout/dl.aiff${TAB}verified" || { echo "FAIL: watched WAV not converted"; cat "$W44/watch.log"; exit 1; }
 kill $WATCHER 2>/dev/null || true; wait $WATCHER 2>/dev/null || true
+
+echo "45. ALAC input: converts with its iTunes tags, checked for length and format; AAC is skipped…"
+A45="$TMP/a45"; mkdir -p "$A45"
+afconvert -f AIFF -d BEI16 "$TMP/tone.aiff" "$A45/t16.aiff"
+afconvert -f m4af -d alac "$A45/t16.aiff" "$A45/a16.m4a"
+afconvert -f m4af -d alac "$TMP/tone.aiff" "$A45/a24.m4a"
+afconvert -f m4af -d aac "$TMP/tone.aiff" "$A45/aac.m4a"
+# tag_m4a <src.m4a> <dst.m4a>: add iTunes tags, growing moov into the free atom afconvert leaves after it.
+tag_m4a() {
+python3 -I - "$1" "$2" <<'PY'
+import sys, struct
+d = bytearray(open(sys.argv[1], 'rb').read())
+def atom(t, body): return struct.pack('>I', 8 + len(body)) + t + body
+def data(kind, value): return atom(b'data', struct.pack('>II', kind, 0) + value)
+c = lambda s: ('©' + s).encode('latin1')
+items = (atom(c('nam'), data(1, b'Song Title')) + atom(c('ART'), data(1, b'Some Artist'))
+         + atom(c('alb'), data(1, 'Album 蒸發'.encode())) + atom(b'aART', data(1, b'VA'))
+         + atom(b'trkn', data(0, struct.pack('>HHHH', 0, 3, 12, 0))) + atom(b'tmpo', data(21, struct.pack('>H', 128)))
+         + atom(c('day'), data(1, b'2026-03-01'))
+         + atom(b'----', atom(b'mean', b'\0\0\0\0com.apple.iTunes') + atom(b'name', b'\0\0\0\0INITIALKEY') + data(1, b'Am'))
+         + atom(b'covr', data(13, bytes.fromhex('ffd8ffe000104a46494600010100000100010000ffd9'))))
+def find(t, start, end):
+    i = start
+    while i + 8 <= end:
+        n = struct.unpack('>I', d[i:i+4])[0]
+        if d[i+4:i+8] == t: return i, n
+        i += n
+    raise SystemExit('test setup: no ' + t.decode('latin1') + ' atom')
+moov, mn = find(b'moov', 0, len(d)); udta, un = find(b'udta', moov + 8, moov + mn)
+meta, men = find(b'meta', udta + 8, udta + un); ilst, iln = find(b'ilst', meta + 12, meta + men)
+free, fn = find(b'free', moov + mn, len(d))
+assert free == moov + mn and fn - 8 >= len(items), 'test setup: no room after moov'
+for at in (moov, udta, meta, ilst): d[at:at+4] = struct.pack('>I', struct.unpack('>I', d[at:at+4])[0] + len(items))
+d[ilst + iln:ilst + iln] = items
+f = free + len(items); d[f:f+4] = struct.pack('>I', fn - len(items)); del d[f + fn - len(items):f + fn]
+open(sys.argv[2], 'wb').write(d)
+PY
+}
+tag_m4a "$A45/a24.m4a" "$A45/tagged.m4a" || { echo "FAIL: test setup: couldn't tag the ALAC file"; exit 1; }
+[ "$("$BIN" --convert "$A45/a16.m4a" "$A45/out")" = "OK $A45/out/a16.aiff${TAB}format checked" ] || { echo "FAIL: 16-bit ALAC not converted"; exit 1; }
+[ "$("$BIN" --convert "$A45/a24.m4a" "$A45/out")" = "OK $A45/out/a24.aiff${TAB}format checked" ] || { echo "FAIL: 24-bit ALAC not converted"; exit 1; }
+fmt "$A45/out/a16.aiff" | grep -q "16-bit" && fmt "$A45/out/a24.aiff" | grep -q "24-bit" || { echo "FAIL: ALAC depth not matched"; exit 1; }
+[ "$(frames "$A45/out/a24.aiff")" = "$(frames "$TMP/tone.aiff")" ] || { echo "FAIL: ALAC length changed"; exit 1; }
+[ "$("$BIN" --convert "$A45/tagged.m4a" "$A45/out")" = "OK $A45/out/tagged.aiff${TAB}tags verified" ] || { echo "FAIL: tagged ALAC not 'tags verified'"; exit 1; }
+check_tags "$A45/out/tagged.aiff" || { echo "FAIL: ALAC tags didn't carry over"; exit 1; }
+python3 -I - "$A45/out/tagged.aiff" <<'PY' || { echo "FAIL: ALAC track, BPM, key, year, album artist or artwork didn't carry over, or player data leaked"; exit 1; }
+import sys
+d = open(sys.argv[1], 'rb').read()
+u = lambda s: s.encode('utf-16-le')
+assert all(x in d for x in [u('3/12'), u('128'), u('Am'), u('2026'), u('VA'), b'APIC']), 'missing'
+assert u('iTunSMPB') not in d and u('ITUNSMPB') not in d, 'iTunSMPB copied'
+PY
+set +e; "$BIN" --convert "$A45/aac.m4a" "$A45/aout" >/dev/null 2>"$A45/err"; RC=$?; set -e
+[ "$RC" -eq 1 ] && grep -q "this .m4a is AAC, which is lossy" "$A45/err" && [ ! -e "$A45/aout/aac.aiff" ] \
+    || { echo "FAIL: AAC not skipped clearly:"; cat "$A45/err"; exit 1; }
+head -c 30000 "$A45/a24.m4a" > "$A45/short.m4a"
+set +e; "$BIN" --convert "$A45/short.m4a" "$A45/sout" >/dev/null 2>"$A45/err"; RC=$?; set -e
+[ "$RC" -eq 1 ] && grep -q "Couldn't read this ALAC file" "$A45/err" && ! ls -A "$A45/sout" 2>/dev/null | grep -q . \
+    || { echo "FAIL: cut-off ALAC not refused clearly:"; cat "$A45/err"; exit 1; }
 
 echo "PASS: all checks."

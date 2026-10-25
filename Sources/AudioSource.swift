@@ -1,3 +1,4 @@
+import AudioToolbox
 import CryptoKit
 import Foundation
 
@@ -42,10 +43,13 @@ extension AudioSource {
 
 /// The input formats, and lookups across them.
 enum AudioSources {
-    static let formats: [AudioSource.Type] = [FlacSource.self, WavSource.self]
+    static let formats: [AudioSource.Type] = [FlacSource.self, WavSource.self, AlacSource.self]
 
-    /// "FLAC or WAV", for messages about what the app takes.
-    static let names = formats.map { $0.name }.joined(separator: " or ")
+    /// "FLAC, WAV or ALAC", for messages about what the app takes.
+    static let names: String = {
+        let all = formats.map { $0.name }
+        return all.dropLast().joined(separator: ", ") + (all.count > 1 ? " or " : "") + all.last!
+    }()
 
     /// Whether `url`'s extension is one of the formats'.
     static func handles(_ url: URL) -> Bool {
@@ -138,4 +142,46 @@ final class WavSource: AudioSource {
         }
         return Data(md5.finalize())
     }
+}
+
+/// An Apple Lossless file (.m4a). ALAC stores no checksum, and the only decoder is Apple's, the
+/// one afconvert uses, so the audio can't be proven identical: length, format and tags are checked.
+/// An .m4a holding AAC is skipped: as AIFF it would only be larger.
+struct AlacSource: AudioSource {
+    static let name = "ALAC"
+    static let extensions = ["m4a"]
+    let url: URL
+    let info: StreamInfo?
+    let skipReason: String?
+
+    init?(url: URL) {
+        guard url.pathExtension.lowercased() == "m4a" else { return nil }
+        self.url = url
+        var file: ExtAudioFileRef?
+        var format = AudioStreamBasicDescription(), frames: Int64 = 0
+        var formatSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size), framesSize = UInt32(MemoryLayout<Int64>.size)
+        defer { if let file { ExtAudioFileDispose(file) } }
+        // Unreadable (a download whose index isn't there yet): afconvert gets to say why.
+        guard ExtAudioFileOpenURL(url as CFURL, &file) == noErr, let file,
+              ExtAudioFileGetProperty(file, kExtAudioFileProperty_FileDataFormat, &formatSize, &format) == noErr else {
+            info = nil; skipReason = nil; return
+        }
+        guard format.mFormatID == kAudioFormatAppleLossless else {
+            info = nil
+            skipReason = "Skipped — this .m4a is AAC, which is lossy: as AIFF it would be 5–10 times larger and sound no better"
+            return
+        }
+        _ = ExtAudioFileGetProperty(file, kExtAudioFileProperty_FileLengthFrames, &framesSize, &frames)
+        // ALAC's format flags name the source depth: 1 = 16, 2 = 20, 3 = 24, 4 = 32-bit.
+        info = [1: 16, 2: 20, 3: 24, 4: 32][Int(format.mFormatFlags)].map {
+            StreamInfo(samples: Int(max(frames, 0)), rate: Int(format.mSampleRate),
+                       channels: Int(format.mChannelsPerFrame), bitsPerSample: $0, md5: nil)
+        }
+        skipReason = nil
+    }
+
+    func tags() -> Tags { TagIO.readITunesTags(url) }
+
+    // afconvert's own words for a cut-off or broken .m4a are a four-letter code ('wht?').
+    var decodeFailureReason: String? { "Couldn't read this ALAC file — it may still be downloading, or be damaged" }
 }

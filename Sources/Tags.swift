@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 /// A cover picture taken from a FLAC PICTURE block.
@@ -227,6 +228,49 @@ enum TagIO {
     private static let infoKeys = [
         "INAM": "TITLE", "IART": "ARTIST", "IPRD": "ALBUM", "IGNR": "GENRE", "ICRD": "DATE",
         "ITRK": "TRACKNUMBER", "IPRT": "TRACKNUMBER", "ICMT": "COMMENT", "ICOP": "COPYRIGHT",
+    ]
+
+    // MARK: - iTunes (MP4) reading
+
+    /// An .m4a's iTunes tags, through AVFoundation, mapped onto the same keys as FLAC's.
+    /// Free-form ----:com.apple.iTunes:NAME fields keep their name (INITIALKEY, LABEL…).
+    static func readITunesTags(_ url: URL) -> Tags {
+        var tags = Tags()
+        let freeform = "itlk/com.apple.iTunes."
+        for item in AVURLAsset(url: url).metadata(forFormat: .iTunesMetadata) {
+            guard let id = item.identifier?.rawValue else { continue }
+            if id.hasPrefix(freeform) {
+                let name = String(id.dropFirst(freeform.count))
+                // iTunSMPB, iTunNORM…: gapless and volume data for players, not tags.
+                guard !name.hasPrefix("iTun"), let value = item.stringValue, !value.isEmpty else { continue }
+                tags.comments.append((name.uppercased(), value))
+                continue
+            }
+            switch id {
+            case "itsk/trkn", "itsk/disk":   // two padding bytes, the number, the total (16-bit each)
+                guard let d = item.dataValue, d.count >= 6 else { continue }
+                let b = Array(d), number = Int(b[2]) << 8 | Int(b[3]), total = Int(b[4]) << 8 | Int(b[5])
+                let (key, totalKey) = id == "itsk/trkn" ? ("TRACKNUMBER", "TRACKTOTAL") : ("DISCNUMBER", "DISCTOTAL")
+                if number > 0 { tags.comments.append((key, String(number))) }
+                if number > 0 && total > 0 { tags.comments.append((totalKey, String(total))) }
+            case "itsk/tmpo":
+                if let bpm = item.numberValue?.intValue, bpm > 0 { tags.comments.append(("BPM", String(bpm))) }
+            case "itsk/covr":
+                guard let d = item.dataValue, !d.isEmpty else { continue }
+                let png = d.starts(with: [0x89, 0x50, 0x4E, 0x47])
+                tags.pictures.append(Picture(type: 3, mime: png ? "image/png" : "image/jpeg", data: d))
+            default:
+                guard let key = iTunesKeys[id], let value = item.stringValue, !value.isEmpty else { continue }
+                tags.comments.append((key, value))
+            }
+        }
+        return tags
+    }
+
+    private static let iTunesKeys = [
+        "itsk/%A9nam": "TITLE", "itsk/%A9ART": "ARTIST", "itsk/%A9alb": "ALBUM", "itsk/aART": "ALBUMARTIST",
+        "itsk/%A9gen": "GENRE", "itsk/%A9wrt": "COMPOSER", "itsk/%A9day": "DATE", "itsk/%A9cmt": "COMMENT",
+        "itsk/cprt": "COPYRIGHT",
     ]
 
     // MARK: - ID3v2 reading

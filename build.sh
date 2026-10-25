@@ -69,6 +69,12 @@ cat > "$APP_STAGE/Contents/Info.plist" <<PLIST
             <key>LSItemContentTypes</key><array><string>com.microsoft.waveform-audio</string></array>
         </dict>
         <dict>
+            <key>CFBundleTypeName</key><string>Apple Lossless Audio</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>None</string>
+            <key>LSItemContentTypes</key><array><string>com.apple.m4a-audio</string></array>
+        </dict>
+        <dict>
             <key>CFBundleTypeName</key><string>Folder</string>
             <key>CFBundleTypeRole</key><string>Viewer</string>
             <key>LSHandlerRank</key><string>None</string>

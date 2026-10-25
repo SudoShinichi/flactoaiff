@@ -4,7 +4,7 @@
 
 # FlacToAiff
 
-**A native macOS app that converts FLAC and WAV to AIFF, keeps the tags and artwork, and checks
+**A native macOS app that converts FLAC, WAV and ALAC to AIFF, keeps the tags and artwork, and checks
 every file against its source before saving it.**
 
 ![macOS 12+](https://img.shields.io/badge/macOS-12%2B-black?logo=apple)
@@ -39,9 +39,9 @@ the CDJ-3000 and CDJ-2000NXS2 do), you may not need it.
 - **Tags and artwork.** They are written as an ID3v2.3 tag, the version DJ software reads most
   reliably.
 - **Verified output.** Before an AIFF is saved, its length, format and tags are checked against
-  the source. Lossless conversions are also compared sample for sample: against the FLAC's audio
-  checksum, or against the WAV's own samples. A file that fails any check is not saved.
-- **Watch folder.** It converts new FLAC and WAV files that appear in a folder you choose while
+  the source. Lossless FLAC and WAV conversions are also compared sample for sample: against the
+  FLAC's audio checksum, or against the WAV's own samples. A file that fails any check is not saved.
+- **Watch folder.** It converts new FLAC, WAV and ALAC files that appear in a folder you choose while
   the app is open.
 - **Careful with your files.**
   - Existing files are never overwritten.
@@ -68,10 +68,11 @@ binary.
 
 ## Usage
 
-Open FlacToAiff and drag `.flac` or `.wav` files or folders onto the window. The AIFFs are written to the
+Open FlacToAiff and drag `.flac`, `.wav` or `.m4a` (Apple Lossless) files or folders onto
+the window. The AIFFs are written to the
 **Save to** folder, which is Downloads by default. You can also drop onto the Dock icon, even
 while the app isn't running, or right-click files in Finder → **Open With → FlacToAiff**.
-FlacToAiff never makes itself the default app for FLAC or WAV files.
+FlacToAiff never makes itself the default app for any of these files.
 
 ### Settings
 
@@ -79,7 +80,7 @@ FlacToAiff never makes itself the default app for FLAC or WAV files.
 | --- | --- |
 | **Save to** | The folder the AIFFs go to, for example a USB stick. |
 | **Format** | The output format (see the next table). The text under the menu explains each option. |
-| **Watch** | A folder whose new FLAC and WAV files convert automatically (see [Watch folder](#watch-folder)). |
+| **Watch** | A folder whose new FLAC, WAV and ALAC files convert automatically (see [Watch folder](#watch-folder)). |
 
 A changed setting applies to the next files you add. Files already queued keep the setting they
 were added with.
@@ -105,8 +106,13 @@ Every file gets a row in the window. The label at the end says what was checked:
 | Label | Meaning |
 | --- | --- |
 | `verified` | The audio is bit-for-bit identical to the source (checked against the FLAC's MD5, or the WAV's samples), and format, length and tags were checked. |
-| `tags verified` | Format, length and tags were checked. The audio was resampled or dithered, so it can't be identical, or the FLAC carries no checksum. |
-| `format checked` | Format and length were checked. There were no tags, and the audio couldn't be compared (resampled, or no checksum in the FLAC). |
+| `tags verified` | Format, length and tags were checked. The audio was resampled or dithered, so it can't be identical, or the source carries no checksum (ALAC never does). |
+| `format checked` | Format and length were checked. There were no tags, and the audio couldn't be compared (resampled, or no checksum in the source). |
+
+**Why ALAC is never `verified`.** ALAC files contain no checksum, and Apple's decoder is the
+only one on the Mac, the same one Apple Music plays them with. FlacToAiff checks the length,
+format and tags, but has nothing independent to compare the audio against. That's a limit of
+the proof, not a sign of lower quality: the conversion is just as lossless.
 | Already converted | This file's AIFF already exists in the output folder. It is left untouched. |
 | Red row | Nothing was saved. The row says why (see [Troubleshooting](#troubleshooting)). |
 
@@ -116,7 +122,7 @@ file again.
 ### Watch folder
 
 Click **Watch** and choose a folder, such as the one your browser downloads into. While the app
-is open, new FLAC and WAV files that appear there are converted into **Save to**. That includes albums
+is open, new FLAC, WAV and ALAC files that appear there are converted into **Save to**. That includes albums
 unzipped or moved into the folder, and their subfolders are kept: `Watch/Album/01.flac` becomes
 `Save to/Album/01.aiff`.
 
@@ -153,6 +159,10 @@ WAV tags are read from an embedded ID3 tag (ID3v2.3 or v2.4, as store downloads 
 the `LIST/INFO` chunk (`INAM` title, `IART` artist, `IPRD` album, `IGNR` genre, `ICRD` date,
 `ITRK` track, `ICMT` comment, `ICOP` copyright). Where both have a field, the ID3 tag wins.
 
+ALAC tags are the iTunes ones: title, artist, album, album artist, genre, composer, year,
+comment, copyright, track and disc numbers, BPM, cover art, and custom fields such as
+`INITIALKEY`. Gapless and volume data (`iTunSMPB`, `iTunNORM`) are player data and aren't copied.
+
 ## How it works
 
 1. **Convert.** `afconvert` decodes the source into a hidden temporary file in the output folder.
@@ -160,7 +170,7 @@ the `LIST/INFO` chunk (`INAM` title, `IART` artist, `IPRD` album, `IGNR` genre, 
    `-r 127 --src-complexity bats` (highest quality). Bit-depth reduction in CD mode adds TPDF
    dither.
 2. **Tag.** `afconvert` copies audio only, so FlacToAiff reads the source's tags (FLAC metadata
-   blocks, or a WAV's ID3 and INFO chunks) and appends an ID3v2.3 chunk.
+   blocks, a WAV's ID3 and INFO chunks, or an ALAC file's iTunes tags) and appends an ID3v2.3 chunk.
 3. **Verify.** A FLAC's STREAMINFO header records the track's length and an MD5 of its audio. A
    WAV's header records the length, and its samples are hashed the same way.
    - The AIFF's length and format must match.
@@ -174,7 +184,8 @@ the `LIST/INFO` chunk (`INAM` title, `IART` artist, `IPRD` album, `IGNR` genre, 
 ## Limitations
 
 - **You build it yourself.** There's no signed or notarized release.
-- **FLAC and WAV input only.** ALAC and other formats are skipped.
+- **FLAC, WAV and ALAC input only.** Other formats are skipped. An `.m4a` that holds lossy AAC
+  is skipped with a message: as AIFF it would be 5–10 times larger and sound no better.
 - **Integer WAV only.** Floating-point WAVs, which some DAWs export, can't become a lossless
   AIFF and are skipped with a message. Export them as 24-bit WAV. Compressed WAVs (ADPCM, MP3 in
   WAV) are skipped too.
@@ -201,6 +212,9 @@ FLAC. Save the file as 16 or 24-bit in an audio editor, then add it again.
 **"track.aiff already exists, made from a different file".** Two different files share a name,
 for example `A/track.flac` and `B/track.flac` dropped into the same **Save to** folder. Nothing was
 saved and the existing AIFF is untouched. Rename one of the files and add it again.
+
+**"Couldn't read this ALAC file".** The `.m4a` is cut off or damaged. Let the download finish, or
+download it again.
 
 **"Skipped — floating-point WAV can't become a lossless AIFF".** The WAV stores 32 or 64-bit
 floating-point samples. Export it from your DAW as 24-bit WAV, then add it again.
@@ -236,7 +250,7 @@ permission goes to FlacToAiff itself.
 arch -x86_64 ./test.sh          # the same checks on the Intel build, under Rosetta
 ```
 
-`test.sh` rebuilds the app if the sources changed, then runs end-to-end checks on real FLAC and WAV files that it generates itself. It covers:
+`test.sh` rebuilds the app if the sources changed, then runs end-to-end checks on real FLAC, WAV and ALAC files that it generates itself. It covers:
 - bit-depth and sample-rate handling in every format, including the depths macOS can't decode
 - tag and artwork transfer, including unusual tags
 - the verification checks, including tampered and truncated files
@@ -263,9 +277,9 @@ FlacToAiff.app/Contents/MacOS/FlacToAiff --watch   [--format original|max48|cd] 
 | --- | --- |
 | `Sources/main.swift` | Window, settings bar, app delegate, command-line modes |
 | `Sources/Converter.swift` | Output-format choice, `afconvert`, atomic publishing |
-| `Sources/Tags.swift` | FLAC and WAV header and tag parsing, ID3 reading and writing, AIFF reading |
+| `Sources/Tags.swift` | FLAC and WAV header and tag parsing, iTunes tags, ID3 reading and writing, AIFF reading |
 | `Sources/Verifier.swift` | Length, format, audio checksum and tag checks |
-| `Sources/AudioSource.swift` | Input formats: one type per format (FLAC, WAV) |
+| `Sources/AudioSource.swift` | Input formats: one type per format (FLAC, WAV, ALAC) |
 | `Sources/Jobs.swift` | Expands dropped files and folders into conversions |
 | `Sources/FolderWatcher.swift` | Watch folder (FSEvents) and launch catch-up |
 | `Sources/ConversionQueue.swift` | Background queue shared by all inputs |
