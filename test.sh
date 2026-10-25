@@ -143,7 +143,8 @@ assert struct.unpack('>I', form[4:8])[0] + 8 == f.seek(0, 2), 'FORM size wrong'
 frames, j = {}, 10
 while j < len(tag) and tag[j] != 0:
     fid, n = tag[j:j+4].decode(), struct.unpack('>I', tag[j+4:j+8])[0]
-    frames[fid] = tag[j+10:j+10+n][1:].decode('utf-16'); j += 10 + n
+    if fid[0] == 'T' and fid != 'TXXX': frames[fid] = tag[j+10:j+10+n][1:].decode('utf-16')
+    j += 10 + n
 want = {'TIT2': 'Song Title', 'TPE1': 'Some Artist', 'TALB': 'Album 蒸發'}
 assert all(frames.get(k) == v for k, v in want.items()), frames
 PY
@@ -211,7 +212,7 @@ ACTUAL="$(cd "$FOLD" && find . -mindepth 1 | sed 's|^\./||' | LC_ALL=C sort)"
 echo "16. Folder without FLACs reports it and creates nothing; several inputs in one call…"
 mkdir -p "$TMP/NoFlacs"; echo x > "$TMP/NoFlacs/readme.txt"
 set +e; "$BIN" --convert "$TMP/NoFlacs" "$FOLD" 2>"$TMP/nf.err"; RC=$?; set -e
-[ "$RC" -eq 1 ] && grep -q "No .flac files found" "$TMP/nf.err" || { echo "FAIL: empty folder not reported"; exit 1; }
+[ "$RC" -eq 1 ] && grep -q "No FLAC or WAV files found" "$TMP/nf.err" || { echo "FAIL: empty folder not reported"; exit 1; }
 [ ! -e "$FOLD/NoFlacs" ] || { echo "FAIL: empty output folder created"; exit 1; }
 MULTI="$("$BIN" --convert "$TMP/tone.flac" "$TMP/t16.flac" "$TMP/multi" | grep -c '^OK ' || true)"
 [ "$MULTI" -eq 2 ] || { echo "FAIL: expected 2 OK lines for two inputs, got $MULTI"; exit 1; }
@@ -226,11 +227,13 @@ echo "18. App declares FLAC + folders for Dock drops, with rank None (never the 
 PLIST="build/FlacToAiff.app/Contents/Info.plist"
 [ "$(plutil -extract CFBundleDocumentTypes.0.LSItemContentTypes.0 raw "$PLIST" 2>/dev/null)" = "org.xiph.flac" ] \
     || { echo "FAIL: org.xiph.flac not declared"; exit 1; }
-for i in 0 1; do
+for i in 0 1 2; do
     [ "$(plutil -extract CFBundleDocumentTypes.$i.LSHandlerRank raw "$PLIST")" = "None" ] \
         || { echo "FAIL: document type $i rank is not None (could become the default app)"; exit 1; }
 done
-[ "$(plutil -extract CFBundleDocumentTypes.1.LSItemContentTypes.0 raw "$PLIST")" = "public.folder" ] \
+[ "$(plutil -extract CFBundleDocumentTypes.1.LSItemContentTypes.0 raw "$PLIST")" = "com.microsoft.waveform-audio" ] \
+    || { echo "FAIL: WAV not declared"; exit 1; }
+[ "$(plutil -extract CFBundleDocumentTypes.2.LSItemContentTypes.0 raw "$PLIST")" = "public.folder" ] \
     || { echo "FAIL: folders not declared"; exit 1; }
 
 echo "19. Converting onto an exFAT volume (typical DJ USB stick) works…"
@@ -629,5 +632,93 @@ done
 # An AIFF from an earlier version (or another app) records no source: "Already converted", as before.
 afconvert -f AIFF -d BEI16 "$TMP/tone.aiff" "$C43/old/track.aiff"
 [ "$("$BIN" --convert "$C43/B/track.flac" "$C43/old")" = "SKIP $C43/old/track.aiff" ] || { echo "FAIL: an AIFF without a recorded source should SKIP"; exit 1; }
+
+echo "44. WAV input: every PCM depth verifies, tags come from INFO and ID3, float is skipped…"
+W44="$TMP/w44"; mkdir -p "$W44/in"
+afconvert -f AIFF -d BEI24 -c 2 "$TMP/tone.aiff" "$W44/stereo.aiff"
+for d in UI8 LEI16 LEI24 LEI32; do afconvert -f WAVE -d "$d" "$W44/stereo.aiff" "$W44/in/$d.wav"; done
+afconvert -f WAVE -d LEF32 "$W44/stereo.aiff" "$W44/float.wav"
+for d in UI8 LEI16 LEI24 LEI32; do
+    [ "$("$BIN" --convert "$W44/in/$d.wav" "$W44/out")" = "OK $W44/out/$d.aiff${TAB}verified" ] || { echo "FAIL: $d WAV not verified"; exit 1; }
+done
+fmt "$W44/out/UI8.aiff" | grep -q "16-bit" && fmt "$W44/out/LEI32.aiff" | grep -q "32-bit" || { echo "FAIL: WAV depths not matched"; exit 1; }
+set +e; "$BIN" --convert "$W44/float.wav" "$W44/fout" >/dev/null 2>"$W44/err"; RC=$?; set -e
+[ "$RC" -eq 1 ] && grep -q "floating-point WAV can't become a lossless AIFF" "$W44/err" && [ ! -e "$W44/fout/float.aiff" ] \
+    || { echo "FAIL: float WAV not skipped clearly:"; cat "$W44/err"; exit 1; }
+
+# wav_variant <src.wav> <dst.wav> <kind>: extensible (fmt as WAVE_FORMAT_EXTENSIBLE), streamed
+# (data size 0xFFFFFFFF), short (header claims more data than there is), info (LIST/INFO tags),
+# id3 (an ID3v2.4 chunk with UTF-8 text, a TXXX and a picture), both (ID3 title only + full INFO).
+wav_variant() {
+python3 -I - "$@" <<'PY'
+import sys, struct
+src, dst, kind = sys.argv[1:4]
+d = open(src, 'rb').read()
+chunks, i = [], 12
+while i < len(d):
+    cid, n = d[i:i+4], struct.unpack('<I', d[i+4:i+8])[0]
+    chunks.append([cid, d[i+8:i+8+n]]); i += 8 + n + (n & 1)
+def chunk(cid, body): return cid + struct.pack('<I', len(body)) + body + (b'\0' if len(body) & 1 else b'')
+def info(title=True):
+    items = ([(b'INAM', 'Song Title')] if title else []) + [(b'IART', 'Some Artist'), (b'IPRD', 'Album 蒸發')]
+    return chunk(b'LIST', b'INFO' + b''.join(chunk(k, v.encode() + b'\0') for k, v in items))
+def id3(full=True):
+    def frame(fid, body):
+        n = len(body); return fid + bytes([n >> 21 & 127, n >> 14 & 127, n >> 7 & 127, n & 127]) + b'\0\0' + body
+    fr = frame(b'TIT2', b'\x03Song Title')
+    if full:
+        fr += frame(b'TPE1', b'\x03Some Artist') + frame(b'TALB', b'\x03' + 'Album 蒸發'.encode())
+        fr += frame(b'TXXX', b'\x03MOOD\0calm') + frame(b'TDRC', b'\x032026-03-01')
+        fr += frame(b'APIC', b'\x03image/jpeg\0\x03\0' + bytes.fromhex('ffd8ffe000104a46494600010100000100010000ffd9'))
+    n = len(fr)
+    return chunk(b'id3 ', b'ID3\x04\0\0' + bytes([n >> 21 & 127, n >> 14 & 127, n >> 7 & 127, n & 127]) + fr)
+out = b''
+for cid, body in chunks:
+    if cid == b'fmt ' and kind == 'extensible':
+        tag, ch, rate, brate, align, bits = struct.unpack('<HHIIHH', body[:16])
+        guid = struct.pack('<H', tag) + bytes.fromhex('000000001000800000aa00389b71')
+        body = struct.pack('<HHIIHH', 0xFFFE, ch, rate, brate, align, bits) + struct.pack('<HHI', 22, bits, 3) + guid
+    if cid == b'data' and kind == 'streamed':
+        out += b'data' + struct.pack('<I', 0xFFFFFFFF) + body; continue
+    if cid == b'data' and kind == 'short':
+        out += b'data' + struct.pack('<I', len(body)) + body[:len(body) // 2]; continue
+    out += chunk(cid, body)
+if kind == 'info': out += info()
+if kind == 'id3': out += id3()
+if kind == 'both': out += id3(full=False) + info(title=False)
+open(dst, 'wb').write(b'RIFF' + struct.pack('<I', 4 + len(out)) + b'WAVE' + out)
+PY
+}
+for k in extensible streamed info id3 both; do wav_variant "$W44/in/LEI24.wav" "$W44/$k.wav" "$k"; done
+for k in extensible streamed; do
+    [ "$("$BIN" --convert "$W44/$k.wav" "$W44/vout")" = "OK $W44/vout/$k.aiff${TAB}verified" ] || { echo "FAIL: $k WAV not verified"; exit 1; }
+done
+for k in info id3 both; do
+    [ "$("$BIN" --convert "$W44/$k.wav" "$W44/tout")" = "OK $W44/tout/$k.aiff${TAB}verified" ] || { echo "FAIL: tagged ($k) WAV not verified"; exit 1; }
+    check_tags "$W44/tout/$k.aiff" || { echo "FAIL: $k WAV's tags didn't carry over"; exit 1; }
+done
+python3 -I - "$W44/tout/id3.aiff" <<'PY' || { echo "FAIL: the ID3v2.4 picture, TXXX or date didn't carry over"; exit 1; }
+import sys
+d = open(sys.argv[1], 'rb').read()
+assert b'APIC' in d and 'MOOD'.encode('utf-16-le') in d and 'calm'.encode('utf-16-le') in d and '2026'.encode('utf-16-le') in d
+PY
+wav_variant "$W44/in/LEI24.wav" "$W44/short.wav" short
+set +e; "$BIN" --convert "$W44/short.wav" "$W44/sout" >/dev/null 2>"$W44/err"; RC=$?; set -e
+[ "$RC" -eq 1 ] && grep -q "WAV is incomplete" "$W44/err" || { echo "FAIL: truncated WAV not refused:"; cat "$W44/err"; exit 1; }
+
+# A folder with x.flac and x.wav: the first converts, the second can't take its name.
+mkdir -p "$W44/mixed"; cp "$TMP/hr96.flac" "$W44/mixed/x.flac"; cp "$W44/in/LEI16.wav" "$W44/mixed/x.wav"
+set +e; "$BIN" --convert "$W44/mixed" "$W44/mout" >"$W44/mixed.out" 2>"$W44/err"; set -e
+grep -q "^OK $W44/mout/mixed/x.aiff" "$W44/mixed.out" && grep -q "x.wav: x.aiff already exists, made from a different file" "$W44/err" \
+    || { echo "FAIL: x.flac + x.wav not handled:"; cat "$W44/mixed.out" "$W44/err"; exit 1; }
+
+# The watch folder takes WAVs too.
+W44W="$TMP/w44watch"; mkdir -p "$W44W"
+"$BIN" --watch "$W44W" "$W44/wout" > "$W44/watch.log" 2>&1 &
+WATCHER=$!
+wait_log "$W44/watch.log" '^WATCHING ' || { echo "FAIL: --watch never reported it was ready"; exit 1; }
+cp "$W44/in/LEI16.wav" "$W44W/dl.wav"
+wait_log "$W44/watch.log" "^OK $W44/wout/dl.aiff${TAB}verified" || { echo "FAIL: watched WAV not converted"; cat "$W44/watch.log"; exit 1; }
+kill $WATCHER 2>/dev/null || true; wait $WATCHER 2>/dev/null || true
 
 echo "PASS: all checks."

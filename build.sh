@@ -63,6 +63,12 @@ cat > "$APP_STAGE/Contents/Info.plist" <<PLIST
             <key>LSItemContentTypes</key><array><string>org.xiph.flac</string></array>
         </dict>
         <dict>
+            <key>CFBundleTypeName</key><string>WAV Audio</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>None</string>
+            <key>LSItemContentTypes</key><array><string>com.microsoft.waveform-audio</string></array>
+        </dict>
+        <dict>
             <key>CFBundleTypeName</key><string>Folder</string>
             <key>CFBundleTypeRole</key><string>Viewer</string>
             <key>LSHandlerRank</key><string>None</string>
