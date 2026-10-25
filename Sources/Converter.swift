@@ -26,9 +26,10 @@ enum Outcome {
     case alreadyConverted(URL)
 }
 
-/// Output compatibility target. Raw values are the CLI `--format` names and the stored setting.
+/// How files are converted. Raw values are the CLI `--format` names; the Player menu picks one.
 enum OutputMode: String, CaseIterable, Identifiable {
     case original   // lossless: depth matched, rate kept
+    case max96      // CDJ-3000-class players: ≤24-bit, ≤96 kHz
     case max48      // CDJ-2000NXS-class players: ≤24-bit, ≤48 kHz
     case cd         // audio-CD burning: 16-bit / 44.1 kHz
 
@@ -38,6 +39,8 @@ enum OutputMode: String, CaseIterable, Identifiable {
 /// Per-conversion choices.
 struct ConvertOptions {
     var mode: OutputMode = .original
+    /// Leave alone files this player plays as they are; nil converts everything.
+    var skipPlayableOn: Player?
 }
 
 /// Core audio → AIFF conversion logic. No UI knowledge; usable headless.
@@ -76,9 +79,10 @@ enum Converter {
         return SourceFormat(depth: depth, rate: rate)
     }
 
-    /// The output format for `mode`. Original is lossless; max48 caps at 24-bit and resamples
-    /// > 48 kHz to the same-family rate (88.2/176.4 → 44.1, 96/192 → 48) so the ratio stays an
-    /// integer; cd forces 16-bit / 44.1 kHz. Both dither when reducing bit depth.
+    /// The output format for `mode`. Original is lossless; max96 and max48 cap at 24-bit and
+    /// resample rates above the cap to the same family (max48: 88.2/176.4 → 44.1, 96/192 → 48;
+    /// max96: 176.4 → 88.2, 192 → 96) so the ratio stays an integer; cd forces 16-bit / 44.1 kHz.
+    /// All dither when reducing bit depth.
     static func outputFormat(for source: SourceFormat, mode: OutputMode) -> OutputFormat {
         let matched: Int
         switch source.depth ?? 24 {   // on detection failure, fail toward lossless
@@ -89,10 +93,11 @@ enum Converter {
         switch mode {
         case .original:
             return OutputFormat(depth: matched, rate: nil, dither: false)
-        case .max48:
+        case .max96, .max48:
+            let cap = mode == .max96 ? 96_000 : 48_000
             let depth = min(matched, 24), dither = matched > depth
-            guard let rate = source.rate, rate > 48_000 else { return OutputFormat(depth: depth, rate: nil, dither: dither) }
-            return OutputFormat(depth: depth, rate: rate % 44_100 == 0 ? 44_100 : 48_000, dither: dither)
+            guard let rate = source.rate, rate > cap else { return OutputFormat(depth: depth, rate: nil, dither: dither) }
+            return OutputFormat(depth: depth, rate: rate % 44_100 == 0 ? cap / 48_000 * 44_100 : cap, dither: dither)
         case .cd:
             // Unknown rate → resample anyway: CD players accept nothing but 44.1 kHz.
             return OutputFormat(depth: 16, rate: source.rate == 44_100 ? nil : 44_100,

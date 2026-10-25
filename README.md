@@ -79,25 +79,29 @@ FlacToAiff never makes itself the default app for any of these files.
 | Setting | What it does |
 | --- | --- |
 | **Save to** | The folder the AIFFs go to, for example a USB stick. |
-| **Format** | The output format (see the next table). The text under the menu explains each option. |
+| **Player** | What the files are for (see the next table). The text under the menu says what the player plays. |
+| **Skip files the player already plays** | Shown for DJ players; off by default. Files the player plays as they are, such as a 44.1 kHz FLAC on a CDJ-3000, are left alone and listed as "Plays as is". |
 | **Watch** | A folder whose new FLAC, WAV and ALAC files convert automatically (see [Watch folder](#watch-folder)). |
 
 A changed setting applies to the next files you add. Files already queued keep the setting they
 were added with.
 
-| Format | Output |
-| --- | --- |
-| **Original** (default) | Lossless: same sample rate and bit depth (16 or 24-bit) as the source |
-| **CDJ: max 24-bit / 48 kHz** | Higher sample rates are resampled to the same family (96 → 48 kHz, 88.2 → 44.1 kHz); bit depth is kept |
-| **CD: 16-bit / 44.1 kHz** | Resampled and dithered to CD format |
+| Player | Plays from USB | Output |
+| --- | --- | --- |
+| **Original (lossless)** (default) | — | Same sample rate and bit depth as the source. For Apple Music and software. |
+| **CDJ-3000 / CDJ-3000X**, **CDJ-2000NXS2**, **OPUS-QUAD** | FLAC, WAV, ALAC, AIFF up to 24-bit / 96 kHz | 176.4 → 88.2 kHz, 192 → 96 kHz; 32-bit → 24-bit |
+| **XDJ-1000MK2** | FLAC, WAV, ALAC, AIFF up to 24-bit / 48 kHz | 88.2/176.4 → 44.1 kHz, 96/192 → 48 kHz; 32-bit → 24-bit |
+| **XDJ-RX3 / XDJ-XZ** | FLAC, WAV, AIFF up to 24-bit / 48 kHz (no ALAC) | as XDJ-1000MK2 |
+| **CDJ-2000NXS / CDJ-900NXS / XDJ-1000 / XDJ-700** | WAV, AIFF up to 24-bit / 48 kHz | as XDJ-1000MK2 |
+| **Audio CD** | — | Resampled and dithered to 16-bit / 44.1 kHz |
 
-Files that already fit a format are converted unchanged. For example, a 16-bit/44.1 kHz FLAC
-comes out identical in all three modes.
+Resampling stays within a rate family (44.1 or 48 kHz), so the ratio is a whole number. Reducing
+bit depth adds dither. Files that already fit are converted unchanged: a 16-bit/44.1 kHz FLAC
+comes out identical for every choice.
 
-> **Which format does my player need?** Check the supported formats in your player's manual.
-> For example, Pioneer's manual for the CDJ-2000NXS lists WAV/AIFF at 44.1 and 48 kHz,
-> 16- and 24-bit, which is the CDJ format. The CDJ-2000NXS2 and CDJ-3000 also play
-> 88.2/96 kHz, so Original works for them.
+The player limits come from the manufacturers' manuals; the sources are listed in
+`Sources/Players.swift`. If your player isn't listed, pick one with the same limits from its
+manual, or Original if it plays everything.
 
 ### Results
 
@@ -114,6 +118,7 @@ only one on the Mac, the same one Apple Music plays them with. FlacToAiff checks
 format and tags, but has nothing independent to compare the audio against. That's a limit of
 the proof, not a sign of lower quality: the conversion is just as lossless.
 | Already converted | This file's AIFF already exists in the output folder. It is left untouched. |
+| Plays as is | "Skip files the player already plays" is on, and the player takes this file as it is. Nothing was written. |
 | Red row | Nothing was saved. The row says why (see [Troubleshooting](#troubleshooting)). |
 
 To convert a track again, for example in a different format, delete its AIFF and add the source
@@ -264,13 +269,16 @@ files can't trigger. Those hooks are never in the app.
 A headless command-line mode is available for scripting:
 
 ```bash
-FlacToAiff.app/Contents/MacOS/FlacToAiff --convert [--format original|max48|cd] <file-or-folder>... <output-dir>
-FlacToAiff.app/Contents/MacOS/FlacToAiff --watch   [--format original|max48|cd] <watch-dir> <output-dir>
+FlacToAiff.app/Contents/MacOS/FlacToAiff --convert [<format>] <file-or-folder>... <output-dir>
+FlacToAiff.app/Contents/MacOS/FlacToAiff --watch   [<format>] <watch-dir> <output-dir>
+# <format>: --format original|max96|max48|cd
+#           --player cdj-3000|cdj-2000nxs2|opus-quad|xdj-1000mk2|xdj-rx3|cdj-2000nxs|original|cd [--skip-playable]
 ```
 
 **Output lines:**
 - A converted file prints `OK <path>`, a tab, and its label.
 - An existing file prints `SKIP <path>`.
+- A file left alone with `--skip-playable` prints `KEEP <name>`, a tab, and the reason.
 - A failure prints `ERROR <name>: <reason>` to stderr, and the exit status is 1.
 
 | File | Purpose |
@@ -279,6 +287,7 @@ FlacToAiff.app/Contents/MacOS/FlacToAiff --watch   [--format original|max48|cd] 
 | `Sources/Converter.swift` | Output-format choice, `afconvert`, atomic publishing |
 | `Sources/Tags.swift` | FLAC and WAV header and tag parsing, iTunes tags, ID3 reading and writing, AIFF reading |
 | `Sources/Verifier.swift` | Length, format, audio checksum and tag checks |
+| `Sources/Players.swift` | The Player menu: each player's limits, with their sources |
 | `Sources/AudioSource.swift` | Input formats: one type per format (FLAC, WAV, ALAC) |
 | `Sources/Jobs.swift` | Expands dropped files and folders into conversions |
 | `Sources/FolderWatcher.swift` | Watch folder (FSEvents) and launch catch-up |

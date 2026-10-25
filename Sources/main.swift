@@ -4,14 +4,17 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 // MARK: - Headless CLI mode (used by test.sh)
-//   --convert [--format original|max48|cd] <file-or-folder>... <outputDir>
-//   --watch   [--format original|max48|cd] [--catch-up-since <unix-time>] <watchDir> <outputDir>   (until killed)
+//   --convert [<format>] <file-or-folder>... <outputDir>
+//   --watch   [<format>] [--catch-up-since <unix-time>] <watchDir> <outputDir>   (until killed)
+//   <format>: --format original|max96|max48|cd, or --player <name> [--skip-playable]
 
 let cliArgs = CommandLine.arguments
 func cliUsage() -> Never {
     FileHandle.standardError.write("""
-        usage: FlacToAiff --convert [--format original|max48|cd] <file-or-folder>... <outputDir>
-               FlacToAiff --watch [--format original|max48|cd] [--catch-up-since <unix-time>] <watchDir> <outputDir>
+        usage: FlacToAiff --convert [<format>] <file-or-folder>... <outputDir>
+               FlacToAiff --watch [<format>] [--catch-up-since <unix-time>] <watchDir> <outputDir>
+        <format>: --format original|max96|max48|cd
+                  --player <name> [--skip-playable]   (\(Player.all.map(\.id).joined(separator: ", ")))
 
         """.data(using: .utf8)!)
     exit(2)
@@ -22,11 +25,12 @@ func cliPrint(_ row: Row) -> Bool {
     switch row.kind {
     case .converted:        print("OK \(row.output!.path)\t\(row.checks ?? "")")
     case .alreadyConverted: print("SKIP \(row.output!.path)")
+    case .leftAlone:        print("KEEP \(row.name)\t\(row.detail)")
     case .skipped, .failed:
         FileHandle.standardError.write("ERROR \(row.name): \(row.detail)\n".data(using: .utf8)!)
     }
     fflush(stdout)
-    return row.kind == .converted || row.kind == .alreadyConverted
+    return row.kind == .converted || row.kind == .alreadyConverted || row.kind == .leftAlone
 }
 
 /// Killed (Ctrl-C, kill): end the running afconvert and delete its temp file before exiting.
@@ -50,6 +54,15 @@ if cliArgs.count >= 2 && (cliArgs[1] == "--convert" || cliArgs[1] == "--watch") 
         guard args.count >= 2, let mode = OutputMode(rawValue: args[1]) else { cliUsage() }
         options.mode = mode
         args.removeFirst(2)
+    } else if args.first == "--player" {
+        guard args.count >= 2, let player = Player.named(args[1]) else { cliUsage() }
+        options.mode = player.mode
+        args.removeFirst(2)
+        if args.first == "--skip-playable" {
+            guard !player.plays.isEmpty else { cliUsage() }
+            options.skipPlayableOn = player
+            args.removeFirst()
+        }
     }
     var catchUpSince: Date?   // --watch only; for tests of the launch catch-up
     if watching && args.first == "--catch-up-since" {
@@ -154,17 +167,21 @@ struct DropView: View {
                 }
                 Spacer()
             }
-            Picker("Format:", selection: $settings.mode) {
-                ForEach(OutputMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
+            Picker("Player:", selection: $settings.player) {
+                ForEach(Player.all) { player in
+                    Text(player.name).tag(player)
                 }
             }
             .pickerStyle(.menu)
             .fixedSize()
-            Text(settings.mode.explanation)
+            Text(settings.player.explanation)
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            if !settings.player.plays.isEmpty {
+                Toggle("Skip files the player already plays", isOn: $settings.skipPlayable)
+                    .help("Leave files alone that the \(settings.player.name) plays as they are, instead of making AIFFs of them")
+            }
         }
         .font(.callout)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -269,34 +286,12 @@ struct DropView: View {
     }
 }
 
-/// Menu titles and explanations (wording from the spec's "Output formats" table). Player names are
-/// examples whose limits come from the manufacturer's manuals, not a compatibility list.
-extension OutputMode {
-    var title: String {
-        switch self {
-        case .original: return "Original (lossless)"
-        case .max48:    return "CDJ: max 24-bit / 48 kHz"
-        case .cd:       return "CD: 16-bit / 44.1 kHz"
-        }
-    }
-
-    var explanation: String {
-        switch self {
-        case .original:
-            return "Same quality as the FLAC. For hi-res-capable players and software, such as the CDJ-3000, CDJ-2000NXS2 or Apple Music."
-        case .max48:
-            return "Lowers hi-res files to 48 kHz / 24-bit, for players limited to that, such as the CDJ-2000NXS. Check your player's manual."
-        case .cd:
-            return "Makes everything 16-bit / 44.1 kHz, the audio CD format, for burning CDs."
-        }
-    }
-}
-
 private extension Row.Kind {
     var symbol: String {
         switch self {
         case .converted:        return "checkmark.circle.fill"
         case .alreadyConverted: return "forward.end.circle.fill"
+        case .leftAlone:        return "play.circle.fill"
         case .skipped:          return "minus.circle.fill"
         case .failed:           return "xmark.circle.fill"
         }
@@ -305,7 +300,7 @@ private extension Row.Kind {
     var color: Color {
         switch self {
         case .converted:                     return .green
-        case .alreadyConverted, .skipped:    return .secondary
+        case .alreadyConverted, .leftAlone, .skipped: return .secondary
         case .failed:                        return .red
         }
     }
