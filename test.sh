@@ -455,5 +455,26 @@ head -c $((PSIZE / 2)) "$TMP/prefixed.flac" > "$TMP/prefixhalf.flac"
 set +e; "$BIN" --convert "$TMP/prefixhalf.flac" "$TMP/p" >/dev/null 2>"$TMP/ph.err"; RC=$?; set -e
 [ "$RC" -eq 1 ] && grep -q "incomplete" "$TMP/ph.err" || { echo "FAIL: truncated ID3-prefixed FLAC not refused"; cat "$TMP/ph.err"; exit 1; }
 
+echo "34. Watch folder: renames inside it and packages moved in don't convert; future timestamps do…"
+W4="$TMP/watch4"; O4="$TMP/watchout4"; mkdir -p "$W4" "$TMP/in4/Album/Disc 1" "$TMP/in4/Plug.bundle/Contents"
+cp "$TMP/tone.flac" "$TMP/in4/Album/Disc 1/a.flac"
+cp "$TMP/tone.flac" "$TMP/in4/Plug.bundle/Contents/inner.flac"
+"$BIN" --watch "$W4" "$O4" > "$TMP/watch4.log" 2>&1 &
+WATCHER=$!
+wait_log "$TMP/watch4.log" '^WATCHING ' || { echo "FAIL: --watch never reported it was ready"; exit 1; }
+mv "$TMP/in4/Album" "$W4/"
+wait_log "$TMP/watch4.log" "^OK .*/Album/Disc 1/a.aiff" || { echo "FAIL: moved-in album not converted"; cat "$TMP/watch4.log"; exit 1; }
+mv "$W4/Album" "$W4/Album (2024)"                     # rename a folder inside the watch folder
+mv "$W4/Album (2024)/Disc 1/a.flac" "$W4/Album (2024)/Disc 1/A Side.flac"   # and a file
+mkdir "$W4/Sorted"; mv "$W4/Album (2024)" "$W4/Sorted/"                     # and move one into a subfolder
+mv "$TMP/in4/Plug.bundle" "$W4/"                      # a package moved in
+cp -p "$TMP/t16.flac" "$TMP/future.flac"; touch -t "$(date -v+2H +%Y%m%d%H%M)" "$TMP/future.flac"
+cp -p "$TMP/future.flac" "$W4/future.flac"            # clock-skewed mtime, 2 h ahead
+wait_log "$TMP/watch4.log" "^OK .*/future.aiff" || { echo "FAIL: FLAC with a future timestamp never converted"; cat "$TMP/watch4.log"; exit 1; }
+sleep 3
+kill $WATCHER; wait $WATCHER 2>/dev/null || true
+[ "$(grep -c '^OK' "$TMP/watch4.log")" -eq 2 ] || { echo "FAIL: renames or a package produced conversions"; cat "$TMP/watch4.log"; exit 1; }
+[ ! -e "$O4/Plug.bundle" ] || { echo "FAIL: package contents converted"; exit 1; }
+
 echo
 echo "PASS: all checks."
