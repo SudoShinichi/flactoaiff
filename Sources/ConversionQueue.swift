@@ -57,6 +57,7 @@ final class ConversionQueue: ObservableObject {
     /// Save to may be back (a drive mounted, another folder chosen): try the watched files that
     /// failed because it was missing (main thread). Nothing happens while it's still missing.
     func retryUnavailable() {
+        settings.followMovedFolders()
         var isDir: ObjCBool = false
         let root = settings.outputFolder
         guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDir), isDir.boolValue,
@@ -70,6 +71,7 @@ final class ConversionQueue: ObservableObject {
 
     private func submit(quietSkips: Bool = false, watchSession session: Int? = nil, watchRoot: URL? = nil,
                         _ makeItems: @escaping (URL) -> [WorkItem]) {
+        settings.followMovedFolders()   // Save to renamed since: save where it is now
         let root = settings.outputFolder
         let options = ConvertOptions(mode: settings.format)
         batchesInFlight += 1

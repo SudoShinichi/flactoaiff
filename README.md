@@ -274,13 +274,16 @@ another **Save to** folder.
 **"Too long for an AIFF file".** The track would be larger than 4 GB as AIFF, the most the format
 allows. Choose a format with a lower sample rate, or split the file.
 
-**"Output folder not available".** The **Save to** folder was renamed or deleted, or its drive
-isn't connected. Reconnect the drive or choose another folder. Watched files that failed for this
-reason are tried again as soon as the folder is back, or at the next launch.
+**"Output folder not available".** The **Save to** folder was deleted, or its drive isn't
+connected. Reconnect the drive or choose another folder. Watched files that failed for this reason
+are tried again as soon as the folder is back, or at the next launch.
 
-**"Watch folder not available".** The watch folder was renamed or deleted, or its drive isn't
-connected. Watching resumes by itself when the drive is back. A renamed or deleted folder has to be
-chosen again under **Watch**.
+**"Watch folder not available".** The watch folder was deleted, or its drive isn't connected.
+Watching resumes by itself when the drive is back. A deleted folder has to be chosen again under
+**Watch**.
+
+Folders that are renamed or moved, including a USB stick that gets a new name, are found again
+by themselves: the app remembers them the way Finder aliases do.
 
 **macOS says the app can't be opened.** Apps you build yourself open normally. A copy that came by
 download or AirDrop is quarantined: right-click it and choose **Open** once, or run
