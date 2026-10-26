@@ -15,7 +15,7 @@ enum WorkItem {
 
 /// The result of one work item, as listed in the window and printed by the CLI.
 struct Row: Identifiable {
-    enum Kind { case converted, alreadyConverted, leftAlone, skipped, failed, info }
+    enum Kind { case converted, alreadyConverted, skipped, failed, info }
     let id = UUID()
     let name: String
     let kind: Kind
@@ -130,10 +130,6 @@ enum Jobs {
             }
             if let reason = source.skipReason {
                 return Row(name: name, kind: .skipped, detail: reason, output: nil, checks: nil)
-            }
-            if let player = options.skipPlayableOn, player.playsAsIs(source) {
-                return Row(name: name, kind: .leftAlone, detail: "Plays as is on the \(player.name) — left where it is, not copied to Save to",
-                           output: nil, checks: nil)
             }
             do {
                 switch try Converter.convert(source, destDir: job.destDir, options: options) {

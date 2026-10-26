@@ -39,8 +39,6 @@ enum OutputMode: String, CaseIterable, Identifiable {
 /// Per-conversion choices.
 struct ConvertOptions {
     var mode: OutputMode = .original
-    /// Leave alone files this player plays as they are; nil converts everything.
-    var skipPlayableOn: Player?
 }
 
 /// Core audio → AIFF conversion logic. No UI knowledge; usable headless.
