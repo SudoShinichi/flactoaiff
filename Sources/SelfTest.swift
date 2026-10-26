@@ -35,6 +35,35 @@ enum SelfTest {
         stored.format = .max48
         expect(Settings(defaults: defaults).format == .max48, "the Format setting persists")
 
+        let arrivedForFolders = Date(timeIntervalSince1970: 1_500_000)
+        // MARK: Folders: found again after they're renamed or moved
+        let folders = temp.appendingPathComponent("folders", isDirectory: true)
+        let saveA = folders.appendingPathComponent("Save A", isDirectory: true)
+        let watchA = folders.appendingPathComponent("Watch A", isDirectory: true)
+        for dir in [saveA, watchA] { try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) }
+        let (moving, movingDefaults) = settings([:])
+        moving.outputFolder = saveA
+        moving.watchFolder = watchA
+        moving.watchedUntil = arrivedForFolders
+        let saveB = folders.appendingPathComponent("Save B", isDirectory: true)
+        let watchB = folders.appendingPathComponent("Sub/Watch B", isDirectory: true)
+        try? FileManager.default.createDirectory(at: watchB.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? FileManager.default.moveItem(at: saveA, to: saveB)
+        try? FileManager.default.moveItem(at: watchA, to: watchB)
+        moving.followMovedFolders()
+        expect(moving.outputFolder.standardizedFileURL.path == saveB.standardizedFileURL.path, "a renamed Save to is found again")
+        expect(moving.watchFolder?.standardizedFileURL.path == watchB.standardizedFileURL.path, "a moved watch folder is found again")
+        expect(moving.watchedUntil == arrivedForFolders, "following a moved watch folder keeps its history")
+        let saveC = folders.appendingPathComponent("Save C", isDirectory: true)
+        try? FileManager.default.moveItem(at: saveB, to: saveC)
+        expect(Settings(defaults: movingDefaults).outputFolder.standardizedFileURL.path == saveC.standardizedFileURL.path,
+               "a Save to renamed while the app was closed is found at launch")
+        try? FileManager.default.removeItem(at: saveC)
+        moving.followMovedFolders()
+        expect(moving.outputFolder.lastPathComponent == "Save B", "a Save to that's gone keeps its last path")
+        let (fresh, _) = settings(["outputFolder": saveA.path])   // saved before bookmarks existed
+        expect(fresh.outputFolder.path == saveA.path, "a path saved by an older version still loads")
+
         // MARK: The queue
         let (s, _) = settings([:])
         let out = temp.appendingPathComponent("out", isDirectory: true)
@@ -47,6 +76,19 @@ enum SelfTest {
             RunLoop.main.run(until: Date().addingTimeInterval(0.05))   // let the last main-queue updates land
             return !queue.isWorking
         }
+
+        // Save to renamed while the app runs: the next batch saves where it is now.
+        let renamedOut = temp.appendingPathComponent("out renamed", isDirectory: true)
+        let outBefore = temp.appendingPathComponent("out before", isDirectory: true)
+        try? FileManager.default.createDirectory(at: outBefore, withIntermediateDirectories: true)
+        s.outputFolder = outBefore
+        try? FileManager.default.moveItem(at: outBefore, to: renamedOut)
+        queue.enqueue([flac])
+        expect(idle() && queue.rows.last?.kind == .converted
+               && queue.rows.last?.output?.deletingLastPathComponent().standardizedFileURL.path == renamedOut.standardizedFileURL.path,
+               "a renamed Save to is followed by the next batch")
+        s.outputFolder = out
+        queue.clear()
 
         // A watched file holds catch-up back until it's converted.
         let watchRoot = flac.deletingLastPathComponent()

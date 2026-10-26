@@ -379,11 +379,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // At launch, also convert what landed in the watch folder while nothing was watching.
         watch(settings.watchFolder, catchingUpSince: catchUpStart)
-        watchSubscription = settings.$watchFolder.dropFirst().sink { [weak self] folder in self?.watch(folder) }
+        // A folder chosen anew starts fresh; one found again after a rename is followed by followWatchFolder.
+        watchSubscription = settings.$watchFolder.dropFirst().sink { [weak self] folder in
+            guard let self, !self.settings.followingMove else { return }
+            self.watch(folder)
+        }
         // Catch-up starts where watching stopped, so moved-away AIFFs aren't re-made every launch.
         // Recorded every minute too, in case the app doesn't quit cleanly.
         watchTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             self?.recordWatchedUntil()
+            self?.settings.followMovedFolders()
             self?.followWatchFolder()
             self?.queue.retryUnavailable()
         }
@@ -391,6 +396,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let center = NSWorkspace.shared.notificationCenter
         volumeObservers = [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification].map {
             center.addObserver(forName: $0, object: nil, queue: .main) { [weak self] _ in
+                self?.settings.followMovedFolders()   // a stick that came back under a new name
                 self?.followWatchFolder()
                 self?.queue.retryUnavailable()   // Save to's drive may be the one that came back
             }
@@ -417,6 +423,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let folder = settings.watchFolder else { return }
         var isDir: ObjCBool = false
         let there = FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDir) && isDir.boolValue
+        if let watcher, there, watcher.root.path != FolderWatcher.resolve(folder).path {
+            recordWatchedUntil()   // renamed or moved: start again where it is, catching up from here
+            watch(nil)
+        }
         if watcher == nil && there {
             watch(folder, catchingUpSince: catchUpStart)
         } else if watcher != nil && !there {
