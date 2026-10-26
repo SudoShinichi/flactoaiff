@@ -1,8 +1,9 @@
 import Foundation
 
 /// The app's single conversion pipeline. Window drops, Dock drops and Finder "Open With"
-/// feed `enqueue`, the watch folder `enqueueWatched`; work runs serially off the main thread
-/// and rows publish as they finish.
+/// feed `enqueue`, the watch folder `enqueueWatched`. Batches run one after another off the main
+/// thread; within a batch, a few files convert at once when Save to is on the Mac's own drive
+/// (see `lanes`). Rows publish as they finish.
 final class ConversionQueue: ObservableObject {
     @Published private(set) var rows: [Row] = []
     /// A watch folder can run for weeks: the window keeps the newest rows, not all of them.
@@ -79,15 +80,21 @@ final class ConversionQueue: ObservableObject {
         isWorking = true
         isConverting = true
         worker.async {
-            for item in makeItems(root) {
-                let row = autoreleasepool { Jobs.run(item, outputRoot: root, options: options) }   // free each file's temporaries before the next
-                if let session = session, case .job(let job) = item {
-                    let retryRoot = row.retryable ? watchRoot : nil
-                    DispatchQueue.main.async { if session == self.watchSession { self.finishedWatched(job.source, retryRoot: retryRoot) } }
+            // Files that would get the same AIFF share a lane, so they still run in their order.
+            let lanes = Self.lanes(for: root)
+            var byLane = [[WorkItem]](repeating: [], count: lanes)
+            for item in makeItems(root) { byLane[Self.lane(of: item, among: lanes)].append(item) }
+            DispatchQueue.concurrentPerform(iterations: lanes) { lane in
+                for item in byLane[lane] {
+                    let row = autoreleasepool { Jobs.run(item, outputRoot: root, options: options) }   // free each file's temporaries before the next
+                    if let session = session, case .job(let job) = item {
+                        let retryRoot = row.retryable ? watchRoot : nil
+                        DispatchQueue.main.async { if session == self.watchSession { self.finishedWatched(job.source, retryRoot: retryRoot) } }
+                    }
+                    if quietSkips && row.kind == .alreadyConverted { continue }
+                    if session != nil && row.routine { continue }   // an AAC download in the watch folder
+                    DispatchQueue.main.async { self.append([row]) }
                 }
-                if quietSkips && row.kind == .alreadyConverted { continue }
-                if session != nil && row.routine { continue }   // an AAC download in the watch folder
-                DispatchQueue.main.async { self.append([row]) }
             }
             DispatchQueue.main.async {
                 self.conversionBatches -= 1
@@ -95,6 +102,23 @@ final class ConversionQueue: ObservableObject {
                 self.batchFinished()
             }
         }
+    }
+
+    /// How many files of a batch convert at once. afconvert uses one core, so a few at once on
+    /// the Mac's own drive; one at a time on USB sticks, external drives and network shares,
+    /// which get slower with several writers.
+    static func lanes(for root: URL) -> Int {
+        let volume = try? root.resourceValues(forKeys: [.volumeIsInternalKey, .volumeIsLocalKey])
+        guard volume?.volumeIsInternal == true, volume?.volumeIsLocal == true else { return 1 }
+        return min(4, max(1, ProcessInfo.processInfo.activeProcessorCount / 2))
+    }
+
+    /// A job's lane: from its AIFF's path, so two sources that would share a name (x.flac and
+    /// x.wav) always share a lane. Notes go to the first.
+    private static func lane(of item: WorkItem, among lanes: Int) -> Int {
+        guard lanes > 1, case .job(let job) = item else { return 0 }
+        let aiff = job.destDir.standardizedFileURL.path + "/" + job.source.deletingPathExtension().lastPathComponent.lowercased()
+        return Int(UInt(bitPattern: aiff.hashValue) % UInt(lanes))
     }
 
     /// Check a stick (or folder) for tracks `player` won't play. Read-only; queued like a drop.

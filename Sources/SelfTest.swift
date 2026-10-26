@@ -161,6 +161,29 @@ enum SelfTest {
         }
         expect(queue.isConverting, "a USB check finishes while a conversion batch still runs")
         expect(idle(), "the batch finishes")
+        let batchRows = queue.rows.filter { $0.name.hasPrefix("b") && $0.name.hasSuffix(".flac") }
+        expect(batchRows.count == 30 && batchRows.allSatisfy { $0.kind == .converted }, "every file of the batch converts")
+        expect(ConversionQueue.lanes(for: temp) == min(4, max(1, ProcessInfo.processInfo.activeProcessorCount / 2)),
+               "several files convert at once on the Mac's own drive")
+        expect(ConversionQueue.lanes(for: URL(fileURLWithPath: "/nonexistent")) == 1, "one at a time where the drive is unknown")
+
+        // Two sources for the same AIFF still run in their order, however many lanes.
+        let pair = temp.appendingPathComponent("pair", isDirectory: true)
+        try? FileManager.default.createDirectory(at: pair, withIntermediateDirectories: true)
+        try? FileManager.default.copyItem(at: flac, to: pair.appendingPathComponent("same.flac"))
+        let afconvert = Process()
+        afconvert.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
+        afconvert.arguments = ["-f", "WAVE", "-d", "LEI16", flac.path, pair.appendingPathComponent("same.wav").path]
+        try? afconvert.run(); afconvert.waitUntilExit()
+        for round in 0..<3 {
+            s.outputFolder = temp.appendingPathComponent("pair-out-\(round)", isDirectory: true)
+            try? FileManager.default.createDirectory(at: s.outputFolder, withIntermediateDirectories: true)
+            queue.enqueue([pair])
+            expect(idle(), "the pair finishes")
+            let flacRow = queue.rows.last { $0.name == "same.flac" }, wavRow = queue.rows.last { $0.name == "same.wav" }
+            expect(flacRow?.kind == .converted && wavRow?.kind == .failed && wavRow?.detail.contains("made from a different file") == true,
+                   "same.flac (listed first) converts and same.wav is refused, round \(round)")
+        }
 
         // A USB check is work, but not conversion: quitting during it loses nothing.
         queue.check(temp, for: Player.named("cdj-3000")!)
@@ -174,7 +197,8 @@ enum SelfTest {
         expect(!queue.rows.isEmpty, "Clear waits until the queue is idle")
         expect(idle(), "the queue finishes the big batch")
         expect(queue.rows.count == ConversionQueue.maxRows, "the window keeps at most \(ConversionQueue.maxRows) rows")
-        expect(queue.rows.last?.name == "x\(ConversionQueue.maxRows).txt", "the newest row is kept")
+        // Rows come in the order files finish, which with several lanes isn't quite the listed one.
+        expect(queue.rows.contains { $0.name == "x\(ConversionQueue.maxRows).txt" }, "the newest row is kept")
         queue.clear()
         expect(queue.rows.isEmpty, "Clear empties an idle window")
 
