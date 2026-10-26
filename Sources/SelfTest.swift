@@ -13,7 +13,7 @@ enum SelfTest {
             if !ok { failures += 1; FileHandle.standardError.write("FAIL selftest: \(what)\n".data(using: .utf8)!) }
         }
 
-        // MARK: Settings: the old Format setting carries over; the Player setting wins over it.
+        // MARK: Settings: earlier versions' choices carry over; the Format setting wins over them.
         func settings(_ values: [String: Any]) -> (Settings, UserDefaults) {
             let name = "flactoaiff.selftest.\(UUID().uuidString)"
             let defaults = UserDefaults(suiteName: name)!
@@ -21,20 +21,17 @@ enum SelfTest {
             for (key, value) in values { defaults.set(value, forKey: key) }
             return (Settings(defaults: defaults), defaults)
         }
-        expect(settings([:]).0.player.id == "original", "no stored setting → Original")
-        expect(settings(["outputMode": "max48"]).0.player.id == "cdj-2000nxs", "old max48 → CDJ-2000NXS class")
-        expect(settings(["outputMode": "cd"]).0.player.id == "cd", "old cd → Audio CD")
-        expect(settings(["outputMode": "bogus"]).0.player.id == "original", "unknown old mode → Original")
-        expect(settings(["outputMode": "cd", "player": "cdj-3000"]).0.player.id == "cdj-3000", "the Player setting wins")
-        let (stored, defaults) = settings([:])
-        stored.player = Player.named("xdj-rx3")!
-        stored.skipPlayable = true
-        let reread = Settings(defaults: defaults)
-        expect(reread.player.id == "xdj-rx3" && reread.skipPlayable, "Player and skip setting persist")
-        expect(reread.convertOptions.skipPlayableOn?.id == "xdj-rx3" && reread.convertOptions.mode == .max48,
-               "convert options follow the player")
-        reread.player = .cd
-        expect(reread.convertOptions.skipPlayableOn == nil, "no skipping for a choice without a player list")
+        expect(settings([:]).0.format == .original, "no stored setting → Original")
+        expect(settings(["outputMode": "max48"]).0.format == .max48, "first Format menu: max48 kept")
+        expect(settings(["outputMode": "cd"]).0.format == .cd, "first Format menu: cd kept")
+        expect(settings(["outputMode": "bogus"]).0.format == .original, "unknown old value → Original")
+        expect(settings(["player": "cdj-3000"]).0.format == .max96, "Player menu: CDJ-3000 → up to 96 kHz")
+        expect(settings(["player": "xdj-rx3"]).0.format == .max48, "Player menu: XDJ-RX3 → up to 48 kHz")
+        expect(settings(["player": "cd", "outputMode": "original"]).0.format == .cd, "Player menu wins over the first menu")
+        expect(settings(["format": "max96", "player": "cd"]).0.format == .max96, "the Format setting wins")
+        let (stored, defaults) = settings(["player": "cdj-3000"])
+        stored.format = .max48
+        expect(Settings(defaults: defaults).format == .max48, "the Format setting persists")
 
         // MARK: The queue
         let (s, _) = settings([:])

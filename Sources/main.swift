@@ -4,19 +4,17 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 // MARK: - Headless CLI mode (used by test.sh)
-//   --convert [<format>] <file-or-folder>... <outputDir>
-//   --watch   [<format>] [--catch-up-since <unix-time>] <watchDir> <outputDir>   (until killed)
-//   <format>: --format original|max96|max48|cd, or --player <name> [--skip-playable]
+//   --convert [--format original|max96|max48|cd] <file-or-folder>... <outputDir>
+//   --watch   [--format …] [--catch-up-since <unix-time>] <watchDir> <outputDir>   (until killed)
 //   --check   --player <name> <folder>   (USB check, read-only)
 
 let cliArgs = CommandLine.arguments
 func cliUsage() -> Never {
     FileHandle.standardError.write("""
-        usage: FlacToAiff --convert [<format>] <file-or-folder>... <outputDir>
-               FlacToAiff --watch [<format>] [--catch-up-since <unix-time>] <watchDir> <outputDir>
-        <format>: --format original|max96|max48|cd
-                  --player <name> [--skip-playable]   (\(Player.all.map(\.id).joined(separator: ", ")))
+        usage: FlacToAiff --convert [--format original|max96|max48|cd] <file-or-folder>... <outputDir>
+               FlacToAiff --watch [--format …] [--catch-up-since <unix-time>] <watchDir> <outputDir>
                FlacToAiff --check --player <name> <folder>
+        <name>: \(Player.all.map(\.id).joined(separator: ", "))
 
         """.data(using: .utf8)!)
     exit(2)
@@ -27,7 +25,6 @@ func cliPrint(_ row: Row) -> Bool {
     switch row.kind {
     case .converted:        print("OK \(row.output!.path)\t\(row.checks ?? "")")
     case .alreadyConverted: print("SKIP \(row.output!.path)")
-    case .leftAlone:        print("KEEP \(row.name)\t\(row.detail)")
     case .info:             print("NOTE \(row.name): \(row.detail)")
     case .skipped, .failed:
         FileHandle.standardError.write("ERROR \(row.name): \(row.detail)\n".data(using: .utf8)!)
@@ -55,7 +52,7 @@ if cliArgs.count == 3 && cliArgs[1] == "--selftest" { exit(SelfTest.run(flac: UR
 if cliArgs.count >= 2 && cliArgs[1] == "--check" {
     // --check --player <name> <folder>: exit 1 when the player can't read the stick or a track.
     let args = Array(cliArgs.dropFirst(2))
-    guard args.count == 3, args[0] == "--player", let player = Player.named(args[1]), !player.plays.isEmpty else { cliUsage() }
+    guard args.count == 3, args[0] == "--player", let player = Player.named(args[1]) else { cliUsage() }
     var failed = false
     for row in USBCheck.run(URL(fileURLWithPath: args[2], isDirectory: true), on: player) where !cliPrint(row) { failed = true }
     exit(failed ? 1 : 0)
@@ -70,15 +67,6 @@ if cliArgs.count >= 2 && (cliArgs[1] == "--convert" || cliArgs[1] == "--watch") 
         guard args.count >= 2, let mode = OutputMode(rawValue: args[1]) else { cliUsage() }
         options.mode = mode
         args.removeFirst(2)
-    } else if args.first == "--player" {
-        guard args.count >= 2, let player = Player.named(args[1]) else { cliUsage() }
-        options.mode = player.mode
-        args.removeFirst(2)
-        if args.first == "--skip-playable" {
-            guard !player.plays.isEmpty else { cliUsage() }
-            options.skipPlayableOn = player
-            args.removeFirst()
-        }
     }
     var catchUpSince: Date?   // --watch only; for tests of the launch catch-up
     if watching && args.first == "--catch-up-since" {
@@ -86,7 +74,7 @@ if cliArgs.count >= 2 && (cliArgs[1] == "--convert" || cliArgs[1] == "--watch") 
         catchUpSince = Date(timeIntervalSince1970: seconds)
         args.removeFirst(2)
     }
-    guard watching ? args.count == 2 : args.count >= 2 else { cliUsage() }
+    guard watching ? args.count == 2 : args.count >= 2, !(args.first?.hasPrefix("--") ?? false) else { cliUsage() }   // an unknown option
     let outputRoot = URL(fileURLWithPath: args.removeLast(), isDirectory: true)
     try? FileManager.default.createDirectory(at: outputRoot, withIntermediateDirectories: true)
 
@@ -183,30 +171,31 @@ struct DropView: View {
                 }
                 Spacer()
             }
-            Picker("Player:", selection: $settings.player) {
-                ForEach(Player.all) { player in
-                    Text(player.name).tag(player)
+            HStack {
+                Picker("Format:", selection: $settings.format) {
+                    ForEach(OutputMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
                 }
+                .pickerStyle(.menu)
+                .fixedSize()
+                Spacer()
+                Menu("Check USB Stick") {
+                    ForEach(Player.all) { player in
+                        Button("For \(player.name)…") {
+                            if let url = pickFolder(startingAt: URL(fileURLWithPath: "/Volumes"), prompt: "Check") {
+                                queue.check(url, for: player)
+                            }
+                        }
+                    }
+                }
+                .fixedSize()
+                .help("List the tracks on a stick that a player won't play. Nothing on the stick is changed.")
             }
-            .pickerStyle(.menu)
-            .fixedSize()
-            Text(settings.player.explanation)
+            Text(settings.format.explanation)
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            if !settings.player.plays.isEmpty {
-                HStack {
-                    Toggle("Skip files the player already plays", isOn: $settings.skipPlayable)
-                        .help("Files the \(settings.player.name) plays as they are stay where they are: no AIFF is made, and nothing is copied to Save to")
-                    Spacer()
-                    Button("Check USB Stick…") {
-                        if let url = pickFolder(startingAt: URL(fileURLWithPath: "/Volumes"), prompt: "Check") {
-                            queue.check(url, for: settings.player)
-                        }
-                    }
-                    .help("List the tracks on a stick that the \(settings.player.name) won't play. Nothing on the stick is changed.")
-                }
-            }
         }
         .font(.callout)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -316,7 +305,6 @@ private extension Row.Kind {
         switch self {
         case .converted:        return "checkmark.circle.fill"
         case .alreadyConverted: return "forward.end.circle.fill"
-        case .leftAlone:        return "play.circle.fill"
         case .info:             return "info.circle.fill"
         case .skipped:          return "minus.circle.fill"
         case .failed:           return "xmark.circle.fill"
@@ -326,7 +314,7 @@ private extension Row.Kind {
     var color: Color {
         switch self {
         case .converted:                     return .green
-        case .alreadyConverted, .leftAlone, .skipped: return .secondary
+        case .alreadyConverted, .skipped:    return .secondary
         case .info:                          return .accentColor
         case .failed:                        return .red
         }

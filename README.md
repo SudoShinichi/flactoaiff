@@ -35,9 +35,9 @@ CDJ-2000NXS2 all play FLAC), you may not need this app.
 - **Drag and drop.** Drop files or folders onto the window or the Dock icon, or use **Open With**
   in Finder. Folders keep their structure.
 - **Lossless by default.** The sample rate and bit depth are kept.
-- **Player presets.** Choose a DJ player and files are converted to what it plays: for example,
-  192 kHz becomes 96 kHz for a CDJ-3000 and 48 kHz for a CDJ-2000NXS. There is also a preset for
-  burning audio CDs.
+- **Formats for DJ players.** Files can be limited to what a player takes: for example, 192 kHz
+  becomes 96 kHz for a CDJ-3000, or 48 kHz for a CDJ-2000NXS. There is also a format for burning
+  audio CDs.
 - **Tags and artwork.** They are written as an ID3v2.3 tag, which rekordbox, Serato and Apple
   Music all read.
 - **Checked output.** Before an AIFF is saved, its format, length and tags are compared with the
@@ -56,7 +56,7 @@ CDJ-2000NXS2 all play FLAC), you may not need this app.
 FlacToAiff is a young, single-developer project.
 
 - There is no signed or notarized download yet. You build the app yourself (see below).
-- The player presets are based on the manufacturers' manuals and spec sheets. They have not yet
+- The player limits are based on the manufacturers' manuals and spec sheets. They have not yet
   been tested on every player. Check your player's manual if a track matters.
 
 ## Installation
@@ -89,32 +89,30 @@ any file type.
 | --- | --- |
 | **Save to** | The folder the AIFFs go to, for example a USB stick. |
 | **Watch** | A folder whose new files convert automatically (see [Watch folder](#watch-folder)). |
-| **Player** | What the files are for (see [Players](#players)). The text under the menu says what the player plays. |
-| **Skip files the player already plays** | Only for DJ players; off by default. Files the player takes as they are, such as a 44.1 kHz FLAC on a CDJ-3000, stay where they are: no AIFF is made, and they are **not** copied to **Save to**. If **Save to** is your USB stick, copy those files over yourself or leave this off. |
+| **Format** | The sample rate and bit depth limit (see [Formats](#formats)). The text under the menu names the players each choice is for. |
 
 A changed setting applies to files you add afterwards. Files already queued keep the settings
 they were added with.
 
-### Players
+### Formats
 
-| Player | Plays from USB | Converted to |
+All these players play AIFF. What differs is the sample rate and bit depth they take, so the
+format choice sets the limits:
+
+| Format | Converted to | For |
 | --- | --- | --- |
-| **Original (lossless)** (default) | — | Same sample rate and bit depth as the source. For Apple Music and software. |
-| **CDJ-3000 / CDJ-3000X**, **CDJ-2000NXS2**, **OPUS-QUAD** | FLAC, WAV, ALAC, AIFF up to 24-bit / 96 kHz | At most 24-bit / 96 kHz |
-| **XDJ-1000MK2** | FLAC, WAV, ALAC, AIFF up to 24-bit / 48 kHz | At most 24-bit / 48 kHz |
-| **XDJ-RX3 / XDJ-XZ** | FLAC, WAV, AIFF up to 24-bit / 48 kHz | At most 24-bit / 48 kHz |
-| **CDJ-2000NXS / CDJ-900NXS / XDJ-1000 / XDJ-700** | WAV, AIFF up to 24-bit / 48 kHz | At most 24-bit / 48 kHz |
-| **Audio CD** | — | 16-bit / 44.1 kHz |
+| **Original (lossless)** (default) | Same sample rate and bit depth as the source | Apple Music, software, and players that take any file |
+| **Up to 24-bit / 96 kHz** | 176.4 → 88.2 kHz, 192 → 96 kHz, 32-bit → 24-bit | CDJ-3000 / CDJ-3000X, CDJ-2000NXS2, OPUS-QUAD |
+| **Up to 24-bit / 48 kHz** | 88.2/176.4 → 44.1 kHz, 96/192 → 48 kHz, 32-bit → 24-bit | XDJ-1000MK2, XDJ-RX3 / XDJ-XZ, CDJ-2000NXS / CDJ-900NXS / XDJ-1000 / XDJ-700 |
+| **Audio CD: 16-bit / 44.1 kHz** | Everything to 16-bit / 44.1 kHz | Burning audio CDs |
 
-- Higher sample rates are lowered within their family, so the ratio is a whole number: 192 kHz
-  becomes 96 or 48 kHz, and 176.4 kHz becomes 88.2 or 44.1 kHz.
+- Higher sample rates are lowered within their family, so the ratio is a whole number.
 - Lowering the bit depth adds dither.
 - Files that already fit are converted without any change to the audio. A 16-bit / 44.1 kHz FLAC
   comes out identical with every choice.
 
-Each player's limits, and where they come from, are listed in `Sources/Players.swift`. If your
-player isn't listed, choose one with the same limits according to its manual, or **Original** if
-it plays everything.
+If your player isn't listed, check its manual for the highest sample rate it plays, or choose
+**Original** if it plays everything.
 
 ### Results
 
@@ -126,7 +124,6 @@ Every file gets a row in the window.
 | `tags verified` | The format, length and tags were checked. The audio couldn't be compared: it was resampled or dithered, or the source has no checksum (ALAC never has one). |
 | `format checked` | The format and length were checked. There were no tags, and the audio couldn't be compared. |
 | Already converted | This file's AIFF already exists in the output folder. It was left untouched. |
-| Plays as is | "Skip files the player already plays" is on, and the player takes this file as it is. It was left where it is; nothing was written to **Save to**. |
 | Red row | Nothing was saved. The row says why (see [Troubleshooting](#troubleshooting)). |
 
 **Why ALAC is never `verified`.** ALAC files contain no checksum, and the only ALAC decoder on
@@ -134,7 +131,7 @@ the Mac is Apple's, the same one Apple Music uses. FlacToAiff checks the length,
 but has nothing independent to compare the audio with. This is a limit of what can be proven, not
 a loss of quality.
 
-To convert a track again, for example for a different player, delete its AIFF and add the source
+To convert a track again, for example in a different format, delete its AIFF and add the source
 file again.
 
 ### Watch folder
@@ -154,18 +151,27 @@ and their subfolders are kept: `Watch/Album/01.flac` becomes `Save to/Album/01.a
 
 ### USB check
 
-With a DJ player chosen, click **Check USB Stick…** and choose a stick or a folder on it. The
-window lists each track the player won't play, and why:
+Click **Check USB Stick**, choose your player, then choose a stick or a folder on it. The window
+lists each track that player won't play, and why:
 
 - a format it doesn't play, such as FLAC on a CDJ-2000NXS, or OGG
 - a sample rate or bit depth above its limit
 - a floating-point or compressed WAV
 
+| Player | Plays from USB |
+| --- | --- |
+| CDJ-3000 / CDJ-3000X, CDJ-2000NXS2, OPUS-QUAD | FLAC, WAV, ALAC, AIFF up to 24-bit / 96 kHz; MP3, AAC |
+| XDJ-1000MK2 | FLAC, WAV, ALAC, AIFF up to 24-bit / 48 kHz; MP3, AAC |
+| XDJ-RX3 / XDJ-XZ | FLAC, WAV, AIFF up to 24-bit / 48 kHz; MP3, AAC |
+| CDJ-2000NXS / CDJ-900NXS / XDJ-1000 / XDJ-700 | WAV, AIFF up to 24-bit / 48 kHz; MP3, AAC |
+
+These limits, and where each comes from, are in `Sources/Players.swift`.
+
 It also warns when the stick itself is a problem: no player listed here reads APFS or NTFS, and
 only some read exFAT. The last row says how many tracks will play.
 
 The check never changes the stick. Replacing tracks on a stick breaks its rekordbox export, so the
-fix is to convert the original files with the player chosen, then export them to the stick again
+fix is to convert the original files in the format for that player, then export them to the stick again
 with rekordbox. **Reveal in Finder** selects the tracks that won't play.
 
 ### Tags
@@ -227,7 +233,7 @@ out as text. Gapless and volume data (`iTunSMPB`, `iTunNORM`) is player data and
   before converting.
 - **Tags are checked only through Apple's reader.** rekordbox and Serato aren't tested
   automatically, although both read ID3v2.3.
-- **Changing the player doesn't redo existing files.** Delete the AIFFs first.
+- **Changing the format doesn't redo existing files.** Delete the AIFFs first.
 - **AIFFs made by versions before October 2026 don't record their source.** An existing
   `track.aiff` of that kind counts as converted for any source file named `track`.
 - **The watch folder only works while the app is open.** On exFAT drives, renaming a file that
@@ -263,7 +269,7 @@ file's tags.
 another **Save to** folder.
 
 **"Too long for an AIFF file".** The track would be larger than 4 GB as AIFF, the most the format
-allows. Choose a player preset with a lower sample rate, or split the file.
+allows. Choose a format with a lower sample rate, or split the file.
 
 **"Output folder not available".** The **Save to** folder was renamed or deleted, or its drive
 isn't connected. Reconnect the drive or choose another folder. Watched files that failed for this
@@ -291,7 +297,7 @@ arch -x86_64 ./test.sh          # the same checks on the Intel build, under Rose
 `test.sh` rebuilds the app if the sources changed, then runs end-to-end checks on real FLAC, WAV
 and ALAC files it generates itself. They cover:
 
-- bit depths and sample rates for every player choice, including the FLAC depths macOS can't decode
+- bit depths and sample rates for every format, including the FLAC depths macOS can't decode
 - tags and artwork from all three formats, including unusual tags
 - the output checks, with tampered and truncated files
 - duplicate names, concurrent conversions and quitting mid-conversion
@@ -308,18 +314,16 @@ Neither is ever compiled into the app.
 The app also runs from the command line:
 
 ```bash
-FlacToAiff.app/Contents/MacOS/FlacToAiff --convert [<format>] <file-or-folder>... <output-dir>
-FlacToAiff.app/Contents/MacOS/FlacToAiff --watch   [<format>] <watch-dir> <output-dir>
+FlacToAiff.app/Contents/MacOS/FlacToAiff --convert [--format original|max96|max48|cd] <file-or-folder>... <output-dir>
+FlacToAiff.app/Contents/MacOS/FlacToAiff --watch   [--format …] <watch-dir> <output-dir>
 FlacToAiff.app/Contents/MacOS/FlacToAiff --check   --player <name> <folder>
-# <format>: --format original|max96|max48|cd
-#       or: --player cdj-3000|cdj-2000nxs2|opus-quad|xdj-1000mk2|xdj-rx3|cdj-2000nxs|original|cd [--skip-playable]
+# <name>: cdj-3000, cdj-2000nxs2, opus-quad, xdj-1000mk2, xdj-rx3, cdj-2000nxs
 ```
 
 | Output | Meaning |
 | --- | --- |
 | `OK <path>`, tab, label | Converted |
 | `SKIP <path>` | Already converted |
-| `KEEP <name>`, tab, reason | Left alone by `--skip-playable` |
 | `NOTE <name>: <text>` | A `--check` summary or note |
 | `ERROR <name>: <reason>` (stderr) | Failed or won't play; the exit status is 1 |
 
@@ -327,7 +331,7 @@ FlacToAiff.app/Contents/MacOS/FlacToAiff --check   --player <name> <folder>
 | --- | --- |
 | `Sources/main.swift` | Window, settings bar, app delegate, command-line modes |
 | `Sources/AudioSource.swift` | Input formats, one type each (FLAC, WAV, ALAC) |
-| `Sources/Players.swift` | The player presets: each player's limits, with sources |
+| `Sources/Players.swift` | What each player plays, with sources; the Format menu's texts |
 | `Sources/Converter.swift` | Output format, `afconvert`, saving without overwriting |
 | `Sources/Tags.swift` | Header and tag reading for each format, ID3 writing, AIFF reading |
 | `Sources/Verifier.swift` | Format, length, audio and tag checks |
