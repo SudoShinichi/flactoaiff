@@ -23,6 +23,8 @@ protocol AudioSource {
     var audioRange: (offset: UInt64, length: UInt64)? { get }
     /// Why this file is left alone without trying, or nil to convert it.
     var skipReason: String? { get }
+    /// Whether that skip is an everyday one (an AAC download), not worth a row for the watch folder.
+    var skipIsRoutine: Bool { get }
     /// A plain reason for a failed decode, given afconvert's error, when the format can explain
     /// it better than afconvert.
     func decodeFailureReason(afconvertError: String) -> String?
@@ -32,35 +34,74 @@ extension AudioSource {
     func audioChecksum() -> Data? { info?.md5 }
     var audioRange: (offset: UInt64, length: UInt64)? { nil }
     var skipReason: String? { nil }
+    var skipIsRoutine: Bool { false }
     func decodeFailureReason(afconvertError: String) -> String? { nil }
 
     /// Identifies the source among files with the same name, so an AIFF made from another
     /// file isn't mistaken for this one's; recorded in the AIFF it becomes. Retagging must not
-    /// change it, and it must be cheap: "Already converted" checks it for every file added again.
-    /// A FLAC's own MD5 when it has one; else the length and format with a hash of the audio's
-    /// first and last 64 KiB; the file size only when neither can be read.
+    /// change it. A FLAC's own MD5 when it has one; else the length, format, file size and
+    /// modification time, and an MD5 of all the encoded audio (never the tags); the file size
+    /// only when neither can be read.
     var fingerprint: String {
         if let md5 = info?.md5 { return "md5:" + hex(md5) }
-        if let i = info, let range = audioRange, let edges = edgeHash(range) {
-            return "audio:\(i.samples):\(i.rate):\(i.channels):\(i.bitsPerSample):\(edges)"
+        if let i = info, let range = audioRange, let hash = audioHash(range) {
+            return "audio3:\(i.samples):\(i.rate):\(i.channels):\(i.bitsPerSample):\(fileSize):\(modified):\(hash)"
         }
         return "size:\(fileSize)"
     }
 
-    /// Whether `recorded`, the fingerprint an existing AIFF holds, is this file's. AIFFs made
-    /// before 2026-10-26 recorded a WAV's full MD5, or an ALAC file's size: those still match.
+    /// Whether `recorded`, the fingerprint an existing AIFF holds, is this file's. Cheap for the
+    /// very same file (same size and modification time); otherwise the audio is read once and
+    /// compared. Earlier versions recorded a WAV's full MD5, a hash of the audio's two ends
+    /// ("audio:"), or the file size: those still match the way they were made.
     func isSource(of recorded: String) -> Bool {
-        if recorded == fingerprint { return true }
-        if recorded.hasPrefix("md5:"), info?.md5 == nil, let md5 = audioChecksum() { return recorded == "md5:" + hex(md5) }
-        if recorded.hasPrefix("size:") { return recorded == "size:\(fileSize)" }
-        return false
+        let parts = recorded.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        switch parts.first {
+        case "md5":
+            if let md5 = info?.md5 { return recorded == "md5:" + hex(md5) }
+            return audioChecksum().map { recorded == "md5:" + hex($0) } ?? false
+        case "audio3":
+            guard parts.count == 8, let i = info,
+                  Array(parts[1...4]) == ["\(i.samples)", "\(i.rate)", "\(i.channels)", "\(i.bitsPerSample)"] else { return false }
+            if parts[5] == "\(fileSize)" && parts[6] == "\(modified)" { return true }   // the same file: nothing to read
+            return audioRange.flatMap(audioHash) == parts[7]
+        case "audio":
+            guard let i = info, let range = audioRange, let edges = edgeHash(range) else { return false }
+            return recorded == "audio:\(i.samples):\(i.rate):\(i.channels):\(i.bitsPerSample):\(edges)"
+        case "size":
+            return recorded == "size:\(fileSize)"
+        default:
+            return false
+        }
     }
 
     private var fileSize: Int { (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0 }
 
+    /// Modification time in whole milliseconds.
+    private var modified: Int64 {
+        let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        return Int64(((date?.timeIntervalSince1970 ?? 0) * 1000).rounded())
+    }
+
     private func hex(_ d: Data) -> String { d.map { String(format: "%02x", $0) }.joined() }
 
-    /// MD5 of the first and last 64 KiB of `range` (all of it when shorter).
+    /// MD5 of all of `range`, streamed so memory stays flat.
+    private func audioHash(_ range: (offset: UInt64, length: UInt64)) -> String? {
+        guard range.length > 0, let fh = try? FileHandle(forReadingFrom: url),
+              (try? fh.seek(toOffset: range.offset)) != nil else { return nil }
+        defer { try? fh.close() }
+        var md5 = Insecure.MD5(), remaining = range.length
+        while remaining > 0 {
+            let chunk = fh.readData(ofLength: Int(min(remaining, 1 << 20)))
+            guard !chunk.isEmpty else { return nil }
+            remaining -= UInt64(chunk.count)
+            md5.update(data: chunk)
+        }
+        return hex(Data(md5.finalize()))
+    }
+
+    /// The fingerprint of 2026-10-26: MD5 of the first and last 64 KiB of `range` (all of it
+    /// when shorter). Only read to recognise AIFFs that recorded it.
     private func edgeHash(_ range: (offset: UInt64, length: UInt64)) -> String? {
         guard range.length > 0, let fh = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? fh.close() }
@@ -68,7 +109,7 @@ extension AudioSource {
         var md5 = Insecure.MD5()
         for start in range.length > 2 * edge ? [range.offset, range.offset + range.length - edge] : [range.offset] {
             guard (try? fh.seek(toOffset: start)) != nil else { return nil }
-            let d = fh.readData(ofLength: Int(min(range.length, range.length > 2 * edge ? edge : range.length)))
+            let d = fh.readData(ofLength: Int(range.length > 2 * edge ? edge : range.length))
             guard !d.isEmpty else { return nil }
             md5.update(data: d)
         }
@@ -224,6 +265,8 @@ struct AlacSource: AudioSource {
     }
 
     func tags() -> Tags { TagIO.readITunesTags(url) }
+
+    var skipIsRoutine: Bool { skipReason != nil }   // AAC: podcasts and purchases land in Downloads all the time
 
     var audioRange: (offset: UInt64, length: UInt64)? { TagIO.mp4MediaData(url) }
 

@@ -26,7 +26,7 @@ enum Outcome {
     case alreadyConverted(URL)
 }
 
-/// How files are converted. Raw values are the CLI `--format` names; the Player menu picks one.
+/// How files are converted. Raw values are the CLI `--format` names and the stored setting.
 enum OutputMode: String, CaseIterable, Identifiable {
     case original   // lossless: depth matched, rate kept
     case max96      // CDJ-3000-class players: ≤24-bit, ≤96 kHz
@@ -78,9 +78,9 @@ enum Converter {
     }
 
     /// The output format for `mode`. Original is lossless; max96 and max48 cap at 24-bit and
-    /// resample rates above the cap to the same family (max48: 88.2/176.4 → 44.1, 96/192 → 48;
-    /// max96: 176.4 → 88.2, 192 → 96) so the ratio stays an integer; cd forces 16-bit / 44.1 kHz.
-    /// All dither when reducing bit depth.
+    /// move every rate the players don't take to one they do, in the same family so the ratio
+    /// stays an integer (max48: 88.2/176.4 → 44.1, 96/192 → 48; max96: 176.4 → 88.2, 192 → 96;
+    /// both: 32 → 48, 22.05 → 44.1); cd forces 16-bit / 44.1 kHz. All dither when reducing bit depth.
     static func outputFormat(for source: SourceFormat, mode: OutputMode) -> OutputFormat {
         let matched: Int
         switch source.depth ?? 24 {   // on detection failure, fail toward lossless
@@ -94,8 +94,11 @@ enum Converter {
         case .max96, .max48:
             let cap = mode == .max96 ? 96_000 : 48_000
             let depth = min(matched, 24), dither = matched > depth
-            guard let rate = source.rate, rate > cap else { return OutputFormat(depth: depth, rate: nil, dither: dither) }
-            return OutputFormat(depth: depth, rate: rate % 44_100 == 0 ? cap / 48_000 * 44_100 : cap, dither: dither)
+            // The players take 44.1 and 48 kHz, and 88.2 and 96 kHz when the cap allows (Players.swift).
+            let family = (source.rate ?? 0) % 11_025 == 0 ? [44_100, 88_200] : [48_000, 96_000]
+            let playable = family.filter { $0 <= cap }
+            guard let rate = source.rate, !playable.contains(rate) else { return OutputFormat(depth: depth, rate: nil, dither: dither) }
+            return OutputFormat(depth: depth, rate: playable.first { $0 >= rate } ?? playable.last!, dither: dither)
         case .cd:
             // Unknown rate → resample anyway: CD players accept nothing but 44.1 kHz.
             return OutputFormat(depth: 16, rate: source.rate == 44_100 ? nil : 44_100,
@@ -246,13 +249,23 @@ enum Converter {
 
     private static let partialPrefix = ".flactoaiff.", partialSuffix = ".partial"
 
-    /// Create a fresh `.flactoaiff.<pid>.<n>.partial` in `dir` (O_CREAT|O_EXCL), so no two
+    /// This Mac's name in temp files: on a folder shared by several Macs, a process ID only
+    /// means something on the Mac that wrote it. Letters, digits and dashes only.
+    private static let hostTag: String = {
+        var buf = [CChar](repeating: 0, count: 256)
+        gethostname(&buf, buf.count - 1)
+        let short = String(cString: buf).split(separator: ".").first.map(String.init) ?? ""
+        let tag = String(short.filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }.prefix(40))
+        return tag.isEmpty ? "mac" : tag
+    }()
+
+    /// Create a fresh `.flactoaiff.<host>.<pid>.<n>.partial` in `dir` (O_CREAT|O_EXCL), so no two
     /// writers — in this process or another — ever share a temp file. The name doesn't
     /// contain the track's, so it fits NAME_MAX whenever the final `<name>.aiff` does.
     private static func reserveTemp(in dir: URL) throws -> URL {
         while true {
             counterLock.lock(); let n = counter; counter += 1; counterLock.unlock()
-            let url = dir.appendingPathComponent("\(partialPrefix)\(getpid()).\(n)\(partialSuffix)")
+            let url = dir.appendingPathComponent("\(partialPrefix)\(hostTag).\(getpid()).\(n)\(partialSuffix)")
             let fd = open(url.path, O_CREAT | O_EXCL | O_WRONLY, 0o644)
             if fd >= 0 { close(fd); inFlight.add(temp: url); return url }
             let e = errno
@@ -271,15 +284,24 @@ enum Converter {
         if first { removeStalePartials(in: dir) }
     }
 
-    /// Delete `.flactoaiff.<pid>.<n>.partial` files whose process is gone (crash leftovers).
+    /// Delete crash leftovers: this Mac's temp files whose process is gone, and other Macs'
+    /// once they haven't changed for a day (their process can't be asked from here).
+    /// Names without a host (`.flactoaiff.<pid>.<n>.partial`) are from before 2026-10-26, this Mac's.
     private static func removeStalePartials(in dir: URL) {
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return }
         for name in names where name.hasPrefix(partialPrefix) && name.hasSuffix(partialSuffix) {
             let parts = name.dropFirst(partialPrefix.count).dropLast(partialSuffix.count).split(separator: ".")
-            guard parts.count == 2, let pid = pid_t(parts[0]), Int(parts[1]) != nil else { continue }
-            if kill(pid, 0) == -1 && errno == ESRCH {
-                try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
+            guard parts.count == 2 || parts.count == 3, let pid = pid_t(parts[parts.count - 2]),
+                  Int(parts[parts.count - 1]) != nil else { continue }
+            let file = dir.appendingPathComponent(name)
+            let stale: Bool
+            if parts.count == 2 || parts[0] == hostTag {
+                stale = kill(pid, 0) == -1 && errno == ESRCH
+            } else {
+                let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+                stale = modified.map { Date().timeIntervalSince($0) > 86_400 } ?? false
             }
+            if stale { try? FileManager.default.removeItem(at: file) }
         }
     }
 

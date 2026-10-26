@@ -23,6 +23,7 @@ struct Row: Identifiable {
     let output: URL?   // the AIFF (converted or already converted), for Reveal in Finder
     let checks: String?   // what verification covered ("verified" …), for converted rows
     var retryable = false   // failed because the output folder wasn't there: worth trying again later
+    var routine = false     // an everyday skip (an AAC download): the watch folder doesn't list it
 }
 
 /// Turning dropped files/folders into work, and work into rows. UI-free.
@@ -129,7 +130,7 @@ enum Jobs {
                 return Row(name: name, kind: .skipped, detail: "Skipped — not a \(AudioSources.names) file", output: nil, checks: nil)
             }
             if let reason = source.skipReason {
-                return Row(name: name, kind: .skipped, detail: reason, output: nil, checks: nil)
+                return Row(name: name, kind: .skipped, detail: reason, output: nil, checks: nil, routine: source.skipIsRoutine)
             }
             do {
                 switch try Converter.convert(source, destDir: job.destDir, options: options) {

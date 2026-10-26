@@ -952,10 +952,70 @@ python3 -I -c "import sys; assert bytes.fromhex('ffd8ffe000104a46494600010100000
     || { echo "FAIL: the unsynced picture wasn't restored"; exit 1; }
 
 echo "49. Settings and the queue (the app's side, which the command line bypasses)…"
-"$HOOKBIN" --selftest "$TMP/tone.flac" >"$TMP/selftest.out" 2>&1 || { echo "FAIL: selftest:"; cat "$TMP/selftest.out"; exit 1; }
+"$HOOKBIN" --selftest "$TMP/tone.flac" "$A45/aac.m4a" >"$TMP/selftest.out" 2>&1 || { echo "FAIL: selftest:"; cat "$TMP/selftest.out"; exit 1; }
 grep -q "^SELFTEST passed" "$TMP/selftest.out" || { echo "FAIL: selftest didn't report:"; cat "$TMP/selftest.out"; exit 1; }
 # Not by running the app with --selftest: an argument the app doesn't know opens its window.
+for width in $("$HOOKBIN" --ideal-widths); do   # the window's minimum is 400 pt, less 2 × 16 pt padding
+    [ "$width" -le 368 ] || { echo "FAIL: a row of the window needs $width pt, more than the 368 pt it has"; exit 1; }
+done
 grep -q "a queued watched file holds catch-up back" "$BIN" && { echo "FAIL: the app itself contains the selftest"; exit 1; }
 grep -q "a queued watched file holds catch-up back" "$HOOKBIN" || { echo "FAIL: test setup: the selftest text isn't where this check looks"; exit 1; }
+
+echo "50. Files that differ only in the middle, low sample rates, other Macs' temp files, LABEL beside ORGANIZATION…"
+R50="$TMP/r50"; mkdir -p "$R50/a" "$R50/b"
+say -o "$R50/long.aiff" --data-format=BEI16@44100 "$(printf 'a longer sentence for a test file. %.0s' {1..8})"
+afconvert -f WAVE -d LEI16 "$R50/long.aiff" "$R50/a/mix.wav"
+python3 -I -c "
+import sys; d = bytearray(open(sys.argv[1], 'rb').read()); m = len(d) // 2
+for i in range(m, m + 4000): d[i] ^= 0x55
+open(sys.argv[2], 'wb').write(d)" "$R50/a/mix.wav" "$R50/b/mix.wav"   # same name, length and ends; a different middle
+touch -t "$(date -v-1d +%Y%m%d%H%M)" "$R50/b/mix.wav"                    # downloaded at another time
+"$BIN" --convert "$R50/a/mix.wav" "$R50/out" >/dev/null
+set +e; "$BIN" --convert "$R50/b/mix.wav" "$R50/out" >/dev/null 2>"$R50/err"; RC=$?; set -e
+[ "$RC" -eq 1 ] && grep -q "made from a different file" "$R50/err" || { echo "FAIL: a WAV differing only in the middle counted as the same file"; exit 1; }
+# An AIFF from 2026-10-26 recorded only the audio's two ends ("audio:"): it still matches its own WAV.
+OLDID="$(python3 -I - "$R50/a/mix.wav" <<'PY'
+import sys, struct, hashlib
+d = open(sys.argv[1], 'rb').read(); i = 12; fmt = None
+while i + 8 <= len(d):
+    cid, n = d[i:i+4], struct.unpack('<I', d[i+4:i+8])[0]
+    if cid == b'fmt ': fmt = d[i+8:i+8+n]
+    if cid == b'data': off, length = i + 8, min(n, len(d) - i - 8); break
+    i += 8 + n + (n & 1)
+ch, rate, align = struct.unpack('<H', fmt[2:4])[0], struct.unpack('<I', fmt[4:8])[0], struct.unpack('<H', fmt[12:14])[0]
+audio, edge = d[off:off+length], 64 << 10
+h = hashlib.md5(audio[:edge] + audio[-edge:] if length > 2 * edge else audio).hexdigest()
+print(f"audio:{length // align}:{rate}:{ch}:{align // ch * 8}:{h}")
+PY
+)"
+set_source "$R50/out/mix.aiff" "$OLDID"
+[ "$("$BIN" --convert "$R50/a/mix.wav" "$R50/out")" = "SKIP $R50/out/mix.aiff" ] || { echo "FAIL: an AIFF recording the older two-ends hash didn't match"; exit 1; }
+
+# Rates the players don't take, below 44.1 kHz, are raised within their family.
+afconvert -f AIFF -d BEI16@32000 "$R50/long.aiff" "$R50/t32.aiff"; afconvert -f flac -d flac "$R50/t32.aiff" "$R50/t32.flac"
+afconvert -f AIFF -d BEI16@22050 "$R50/long.aiff" "$R50/t22.aiff"; afconvert -f flac -d flac "$R50/t22.aiff" "$R50/t22.flac"
+OUT50="$("$BIN" --convert --format max48 "$R50/t32.flac" "$R50/t22.flac" "$R50/low48")"
+grep -q "^OK $R50/low48/t32.aiff" <<<"$OUT50" && fmt "$R50/low48/t32.aiff" | grep -q "48000 Hz" && fmt "$R50/low48/t22.aiff" | grep -q "44100 Hz" \
+    || { echo "FAIL: max48 didn't raise 32 → 48 and 22.05 → 44.1 kHz"; echo "$OUT50"; exit 1; }
+"$BIN" --convert --format max96 "$R50/t32.flac" "$R50/low96" >/dev/null
+fmt "$R50/low96/t32.aiff" | grep -q "48000 Hz" || { echo "FAIL: max96 didn't raise 32 → 48 kHz"; exit 1; }
+LOW50="$("$BIN" --check --player cdj-2000nxs "$R50/low48" 2>/dev/null || true)"   # exit 1: the folder is on APFS
+grep -q "^NOTE low48: All 2 tracks play" <<<"$LOW50" || { echo "FAIL: the converted low-rate files don't pass the USB check"; exit 1; }
+
+# Temp files of another Mac sharing the folder: left alone while recent, removed after a day.
+mkdir -p "$R50/nas"
+echo x > "$R50/nas/.flactoaiff.othermac.12345.0.partial"
+echo x > "$R50/nas/.flactoaiff.othermac.12345.1.partial"; touch -t "$(date -v-2d +%Y%m%d%H%M)" "$R50/nas/.flactoaiff.othermac.12345.1.partial"
+"$BIN" --convert "$TMP/tone.flac" "$R50/nas" >/dev/null
+[ -e "$R50/nas/.flactoaiff.othermac.12345.0.partial" ] && [ ! -e "$R50/nas/.flactoaiff.othermac.12345.1.partial" ] \
+    || { echo "FAIL: another Mac's temp files: the recent one must stay, the day-old one go"; ls -A "$R50/nas"; exit 1; }
+
+# LABEL beside ORGANIZATION: both share TPUB, so LABEL keeps a TXXX of its own.
+tag_flac "$TMP/tone.flac" "$R50/pub.flac" ORGANIZATION=Publisher LABEL=Imprint
+[ "$("$BIN" --convert "$R50/pub.flac" "$R50/pout")" = "OK $R50/pout/pub.aiff${TAB}verified" ] || { echo "FAIL: ORGANIZATION + LABEL not verified"; exit 1; }
+python3 -I -c "
+import sys; d = open(sys.argv[1], 'rb').read(); u = lambda s: s.encode('utf-16-le')
+assert b'TPUB' in d and u('Publisher') in d and u('LABEL') in d and u('Imprint') in d" "$R50/pout/pub.aiff" \
+    || { echo "FAIL: LABEL was dropped beside ORGANIZATION"; exit 1; }
 
 echo "PASS: all checks."

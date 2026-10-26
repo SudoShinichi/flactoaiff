@@ -102,11 +102,12 @@ format choice sets the limits:
 | Format | Converted to | For |
 | --- | --- | --- |
 | **Original (lossless)** (default) | Same sample rate and bit depth as the source | Apple Music, software, and players that take any file |
-| **Up to 24-bit / 96 kHz** | 176.4 → 88.2 kHz, 192 → 96 kHz, 32-bit → 24-bit | CDJ-3000 / CDJ-3000X, CDJ-2000NXS2, OPUS-QUAD |
-| **Up to 24-bit / 48 kHz** | 88.2/176.4 → 44.1 kHz, 96/192 → 48 kHz, 32-bit → 24-bit | XDJ-1000MK2, XDJ-RX3 / XDJ-XZ, CDJ-2000NXS / CDJ-900NXS / XDJ-1000 / XDJ-700 |
+| **Up to 24-bit / 96 kHz** | 176.4 → 88.2 kHz, 192 → 96 kHz, 32 → 48 kHz, 32-bit → 24-bit | CDJ-3000 / CDJ-3000X, CDJ-2000NXS2, OPUS-QUAD |
+| **Up to 24-bit / 48 kHz** | 88.2/176.4 → 44.1 kHz, 96/192 → 48 kHz, 32 → 48 kHz, 32-bit → 24-bit | XDJ-1000MK2, XDJ-RX3 / XDJ-XZ, CDJ-2000NXS / CDJ-900NXS / XDJ-1000 / XDJ-700 |
 | **Audio CD: 16-bit / 44.1 kHz** | Everything to 16-bit / 44.1 kHz | Burning audio CDs |
 
-- Higher sample rates are lowered within their family, so the ratio is a whole number.
+- Sample rates the players don't take are moved to one they do, within the same family, so the
+  ratio is a whole number: higher ones are lowered, and the rare lower ones (32 or 22.05 kHz) raised.
 - Lowering the bit depth adds dither.
 - Files that already fit are converted without any change to the audio. A 16-bit / 44.1 kHz FLAC
   comes out identical with every choice.
@@ -148,10 +149,12 @@ and their subfolders are kept: `Watch/Album/01.flac` becomes `Save to/Album/01.a
   them, move them within the folder or tag them in Finder. Changing a file's contents, for
   example editing its tags in a tag editor, makes it count as new.
 - If the folder's drive isn't connected, watching starts as soon as it is.
+- AAC `.m4a` files that land there (podcasts, purchases) are skipped without a row. Added by
+  hand, they get one.
 
 ### USB check
 
-Click **Check USB Stick**, choose your player, then choose a stick or a folder on it. The window
+Click **Check USB Stick** at the bottom of the window, choose your player, then choose a stick or a folder on it. The window
 lists each track that player won't play, and why:
 
 - a format it doesn't play, such as FLAC on a CDJ-2000NXS, or OGG
@@ -273,7 +276,7 @@ allows. Choose a format with a lower sample rate, or split the file.
 
 **"Output folder not available".** The **Save to** folder was renamed or deleted, or its drive
 isn't connected. Reconnect the drive or choose another folder. Watched files that failed for this
-reason are tried again at the next launch.
+reason are tried again as soon as the folder is back, or at the next launch.
 
 **"Watch folder not available".** The watch folder was renamed or deleted, or its drive isn't
 connected. Watching resumes by itself when the drive is back. A renamed or deleted folder has to be
