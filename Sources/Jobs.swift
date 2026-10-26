@@ -24,6 +24,7 @@ struct Row: Identifiable {
     let checks: String?   // what verification covered ("verified" …), for converted rows
     var retryable = false   // failed because the output folder wasn't there: worth trying again later
     var routine = false     // an everyday skip (an AAC download): the watch folder doesn't list it
+    var warning: String? = nil   // converted, but something is missing (a custom tag left out)
 }
 
 /// Turning dropped files/folders into work, and work into rows. UI-free.
@@ -134,10 +135,11 @@ enum Jobs {
             }
             do {
                 switch try Converter.convert(source, destDir: job.destDir, options: options) {
-                case .converted(let out, let note, let checks):
+                case .converted(let out, let note, let checks, let warning):
                     return Row(name: name, kind: .converted,
-                               detail: "→ \(out.lastPathComponent)" + (note.map { " (\($0))" } ?? "") + " · \(checks.label)",
-                               output: out, checks: checks.label)
+                               detail: "→ \(out.lastPathComponent)" + (note.map { " (\($0))" } ?? "") + " · \(checks.label)"
+                                   + (warning.map { " · \($0)" } ?? ""),
+                               output: out, checks: checks.label, warning: warning)
                 case .alreadyConverted(let out):
                     return Row(name: name, kind: .alreadyConverted, detail: "Already converted", output: out, checks: nil)
                 }

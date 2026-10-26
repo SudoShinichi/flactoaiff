@@ -198,6 +198,11 @@ FLAC tags (Vorbis comments) are written as these ID3v2.3 frames:
 
 - Other tags are kept as custom `TXXX` fields. Non-Latin text is kept.
 - The year is taken from `DATE` in either order, so `2026-03-01` and `03.05.2026` both give 2026.
+- Some taggers put a FLAC's tags in an ID3 block in front of it. Those are used too; where the FLAC
+  has its own tags, they come first.
+- Every written tag must read back unchanged, or the file isn't saved. The one exception is a custom
+  (`TXXX`) field: if one doesn't read back, it's left out and the row says so, rather than losing
+  the whole track over it.
 - Embedded pictures become cover art, front cover first, because players that show one picture
   show the first. Pictures that are only a web link are left out.
 
@@ -332,7 +337,7 @@ FlacToAiff.app/Contents/MacOS/FlacToAiff --check   --player <name> <folder>
 
 | Output | Meaning |
 | --- | --- |
-| `OK <path>`, tab, label | Converted |
+| `OK <path>`, tab, label | Converted (followed by a `NOTE` line if a custom tag was left out) |
 | `SKIP <path>` | Already converted |
 | `NOTE <name>: <text>` | A `--check` summary or note |
 | `ERROR <name>: <reason>` (stderr) | Failed or won't play; the exit status is 1 |

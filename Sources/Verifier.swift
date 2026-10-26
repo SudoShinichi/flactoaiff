@@ -54,7 +54,8 @@ enum Verifier {
             checks.audio = true
         }
         if !writtenFrames.isEmpty {
-            try verifyTags(aiff, writtenFrames)
+            let unreadable = try verifyTags(aiff, writtenFrames)
+            if !unreadable.isEmpty { throw ConvertError.customTagsUnreadable(unreadable) }
             // The source record is the app's own frame: the label counts the file's tags.
             checks.tags = writtenFrames.contains {
                 if case .userText(let description, _) = $0 { return description != TagIO.sourceKey }
@@ -65,7 +66,13 @@ enum Verifier {
     }
 
     /// Read the ID3 tag back the way Apple Music does (AVFoundation) and compare every written frame.
-    private static func verifyTags(_ url: URL, _ frames: [ID3Frame]) throws {
+    /// A named frame (title, artwork…) that doesn't read back throws; custom TXXX fields that
+    /// don't are returned by description, for the converter to leave out.
+    private static func verifyTags(_ url: URL, _ frames: [ID3Frame]) throws -> [String] {
+        #if TEST_HOOKS
+        let damage = ProcessInfo.processInfo.environment["FLACTOAIFF_TEST_DAMAGE"]
+        #endif
+        var unreadable: [String] = []
         // AVFoundation picks the container from the file extension and the temp file has none,
         // so read it through a symlink named .aiff.
         let link = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".aiff")
@@ -89,6 +96,10 @@ enum Verifier {
                 field = description
                 found = take { $0.key as? String == "TXXX" && $0.extraAttributes?[.info] as? String == description
                     && $0.stringValue == value }
+                #if TEST_HOOKS
+                if damage == "customtag" && description == "MOOD" { unreadable.append(description); continue }
+                #endif
+                if !found && description != TagIO.sourceKey { unreadable.append(description); continue }
             case .comment(let value):
                 field = "comment"
                 found = take { $0.key as? String == "COMM" && $0.stringValue == value }
@@ -98,6 +109,7 @@ enum Verifier {
             }
             guard found else { throw ConvertError.verificationFailed("Tag check failed: \(field)") }
         }
+        return unreadable
     }
 
     private static let fieldNames = [

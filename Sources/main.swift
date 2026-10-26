@@ -23,7 +23,9 @@ func cliUsage() -> Never {
 /// `OK`/`SKIP` to stdout, `ERROR` to stderr, flushed at once. Returns false for an ERROR.
 func cliPrint(_ row: Row) -> Bool {
     switch row.kind {
-    case .converted:        print("OK \(row.output!.path)\t\(row.checks ?? "")")
+    case .converted:
+        print("OK \(row.output!.path)\t\(row.checks ?? "")")
+        if let warning = row.warning { print("NOTE \(row.name): \(warning)") }
     case .alreadyConverted: print("SKIP \(row.output!.path)")
     case .info:             print("NOTE \(row.name): \(row.detail)")
     case .skipped, .failed:

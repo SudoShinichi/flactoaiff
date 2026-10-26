@@ -14,6 +14,12 @@ struct Tags {
     var comments: [(key: String, value: String)] = []
     var pictures: [Picture] = []
 
+    /// Add what `other` has and these tags lack: its keys missing here, its pictures if there are none.
+    mutating func fill(from other: Tags) {
+        let missing = Set(other.comments.map(\.key)).filter { value($0) == nil }
+        comments += other.comments.filter { missing.contains($0.key) }
+        if pictures.isEmpty { pictures = other.pictures }
+    }
 
     /// All values for `key`, joined — e.g. several ARTIST entries → "A, B".
     func value(_ key: String) -> String? {
@@ -71,7 +77,18 @@ enum TagIO {
 
     /// Read Vorbis comments and pictures from a FLAC's metadata blocks.
     /// Returns empty tags on any parse problem — missing tags must never block a conversion.
+    /// Some taggers put the tags in an ID3 block in front: it fills in what the FLAC's own lack.
     static func readFlacTags(_ url: URL) -> Tags {
+        var tags = readFlacBlocks(url)
+        if let id3 = leadingID3(url) {
+            var extra = Tags()
+            parseID3(id3, into: &extra)
+            tags.fill(from: extra)
+        }
+        return tags
+    }
+
+    private static func readFlacBlocks(_ url: URL) -> Tags {
         var tags = Tags()
         guard let fh = openFlac(url) else { return tags }
         defer { try? fh.close() }
@@ -126,6 +143,18 @@ enum TagIO {
         let md5 = Data(head[(si + 18)..<(si + 34)])   // bytes 18–33
         return rate > 0 ? StreamInfo(samples: samples, rate: rate, channels: channels, bitsPerSample: bits,
                                      md5: md5.contains { $0 != 0 } ? md5 : nil) : nil
+    }
+
+    /// The ID3v2 tag in front of a FLAC's "fLaC" marker, if a tagger put one there.
+    private static func leadingID3(_ url: URL) -> Data? {
+        guard let fh = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? fh.close() }
+        let head = fh.readData(ofLength: 10)
+        guard head.count == 10, head.prefix(3) == Data("ID3".utf8) else { return nil }
+        let size = head[6..<10].reduce(0) { $0 << 7 | Int($1 & 0x7F) }
+        guard size < 64 << 20 else { return nil }
+        let body = fh.readData(ofLength: size)
+        return body.count == size ? head + body : nil
     }
 
     /// The FLAC opened just past its "fLaC" marker. Some taggers put an ID3v2 tag in front of
@@ -618,6 +647,15 @@ enum TagIO {
     }
 
     // MARK: - AIFF writing
+
+    /// Cut an AIFF back to `size` bytes (dropping the chunks after it) and fix the FORM size.
+    static func truncateAIFF(_ aiff: URL, to size: UInt64) throws {
+        let fh = try FileHandle(forUpdating: aiff)
+        defer { try? fh.close() }
+        try fh.truncate(atOffset: size)
+        try fh.seek(toOffset: 4)
+        try fh.write(contentsOf: be32(Int(size) - 8))
+    }
 
     /// Append an `ID3 ` chunk to an AIFF and grow the FORM size to cover it.
     static func appendID3Chunk(_ tag: Data, to aiff: URL) throws {
