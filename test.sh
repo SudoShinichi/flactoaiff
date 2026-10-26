@@ -807,7 +807,7 @@ grep -q "^KEEP hr96.flac${TAB}Plays as is on the CDJ-3000 / CDJ-3000X" <<<"$OUT4
 # The CDJ-2000NXS plays WAV but not FLAC; the XDJ-RX3 plays FLAC but not ALAC.
 afconvert -f WAVE -d LEI16 "$TMP/t16.aiff" "$P46/t16.wav"
 afconvert -f m4af -d alac "$TMP/t16.aiff" "$P46/t16.m4a"
-[ "$("$BIN" --convert --player cdj-2000nxs --skip-playable "$P46/t16.wav" "$P46/x")" = "KEEP t16.wav${TAB}Plays as is on the CDJ-2000NXS / CDJ-900NXS / XDJ-1000 / XDJ-700 — not converted" ] \
+[ "$("$BIN" --convert --player cdj-2000nxs --skip-playable "$P46/t16.wav" "$P46/x")" = "KEEP t16.wav${TAB}Plays as is on the CDJ-2000NXS / CDJ-900NXS / XDJ-1000 / XDJ-700 — left where it is, not copied to Save to" ] \
     || { echo "FAIL: 16-bit WAV not left alone for the CDJ-2000NXS"; exit 1; }
 "$BIN" --convert --player cdj-2000nxs --skip-playable "$P46/in/t16.flac" "$P46/x" | grep -q "^OK " || { echo "FAIL: FLAC not converted for the CDJ-2000NXS"; exit 1; }
 "$BIN" --convert --player xdj-rx3 --skip-playable "$P46/t16.m4a" "$P46/y" | grep -q "^OK " || { echo "FAIL: ALAC not converted for the XDJ-RX3"; exit 1; }
@@ -960,5 +960,12 @@ PY
 check_tags "$R48/uout/unsync.aiff" || { echo "FAIL: unsynced ID3 tags didn't carry over"; exit 1; }
 python3 -I -c "import sys; assert bytes.fromhex('ffd8ffe000104a46494600010100000100010000ffd9') in open(sys.argv[1], 'rb').read()" "$R48/uout/unsync.aiff" \
     || { echo "FAIL: the unsynced picture wasn't restored"; exit 1; }
+
+echo "49. Settings and the queue (the app's side, which the command line bypasses)…"
+"$HOOKBIN" --selftest "$TMP/tone.flac" >"$TMP/selftest.out" 2>&1 || { echo "FAIL: selftest:"; cat "$TMP/selftest.out"; exit 1; }
+grep -q "^SELFTEST passed" "$TMP/selftest.out" || { echo "FAIL: selftest didn't report:"; cat "$TMP/selftest.out"; exit 1; }
+# Not by running the app with --selftest: an argument the app doesn't know opens its window.
+grep -q "a queued watched file holds catch-up back" "$BIN" && { echo "FAIL: the app itself contains the selftest"; exit 1; }
+grep -q "a queued watched file holds catch-up back" "$HOOKBIN" || { echo "FAIL: test setup: the selftest text isn't where this check looks"; exit 1; }
 
 echo "PASS: all checks."

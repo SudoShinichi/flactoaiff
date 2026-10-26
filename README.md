@@ -90,7 +90,7 @@ any file type.
 | **Save to** | The folder the AIFFs go to, for example a USB stick. |
 | **Watch** | A folder whose new files convert automatically (see [Watch folder](#watch-folder)). |
 | **Player** | What the files are for (see [Players](#players)). The text under the menu says what the player plays. |
-| **Skip files the player already plays** | Only for DJ players; off by default. Files the player takes as they are, such as a 44.1 kHz FLAC on a CDJ-3000, are left alone. |
+| **Skip files the player already plays** | Only for DJ players; off by default. Files the player takes as they are, such as a 44.1 kHz FLAC on a CDJ-3000, stay where they are: no AIFF is made, and they are **not** copied to **Save to**. If **Save to** is your USB stick, copy those files over yourself or leave this off. |
 
 A changed setting applies to files you add afterwards. Files already queued keep the settings
 they were added with.
@@ -126,7 +126,7 @@ Every file gets a row in the window.
 | `tags verified` | The format, length and tags were checked. The audio couldn't be compared: it was resampled or dithered, or the source has no checksum (ALAC never has one). |
 | `format checked` | The format and length were checked. There were no tags, and the audio couldn't be compared. |
 | Already converted | This file's AIFF already exists in the output folder. It was left untouched. |
-| Plays as is | "Skip files the player already plays" is on, and the player takes this file as it is. Nothing was written. |
+| Plays as is | "Skip files the player already plays" is on, and the player takes this file as it is. It was left where it is; nothing was written to **Save to**. |
 | Red row | Nothing was saved. The row says why (see [Troubleshooting](#troubleshooting)). |
 
 **Why ALAC is never `verified`.** ALAC files contain no checksum, and the only ALAC decoder on
@@ -298,9 +298,12 @@ and ALAC files it generates itself. They cover:
 - the watch folder
 - the USB check, on FAT32 and exFAT disk images and an APFS folder
 - saving to an exFAT volume
+- the settings and the conversion queue, through a `--selftest` mode (below)
 
 A separate test binary, built with `-D TEST_HOOKS`, reaches failure paths that real files can't
-trigger. Those hooks are never compiled into the app.
+trigger. It also has a `--selftest` mode for what the command line bypasses: the settings,
+including the migration from older versions, and the queue's bookkeeping for the watch folder.
+Neither is ever compiled into the app.
 
 The app also runs from the command line:
 
@@ -333,6 +336,7 @@ FlacToAiff.app/Contents/MacOS/FlacToAiff --check   --player <name> <folder>
 | `Sources/FolderWatcher.swift` | Watch folder (FSEvents) and launch catch-up |
 | `Sources/ConversionQueue.swift` | Background queue shared by all inputs |
 | `Sources/Settings.swift` | Saved settings |
+| `Sources/SelfTest.swift` | `--selftest` for `test.sh` (test build only) |
 | `scripts/make-icon.swift` | Draws the app icon; run by `build.sh` |
 | `scripts/make-flac.swift` | Writes FLACs of any bit depth for `test.sh` (macOS tools can't) |
 
