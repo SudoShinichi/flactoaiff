@@ -55,7 +55,8 @@ extension OutputMode {
             let names = Player.all.filter { $0.format == self }.map(\.name)
             let list = names.dropLast().joined(separator: ", ") + (names.count > 1 ? " and " : "") + (names.last ?? "")
             let khz = self == .max96 ? "96 or 88.2" : "48 or 44.1"
-            return "For the \(list). Higher sample rates are lowered to \(khz) kHz, 32-bit files to 24-bit. "
+            return "For the \(list). Higher sample rates are lowered to \(khz) kHz, lower ones such as 32 kHz raised "
+                + "to 48 kHz, 32-bit files to 24-bit. "
                 + "Based on the manufacturers' specifications; check your player's manual."
         case .cd:
             return "Makes everything 16-bit / 44.1 kHz, the audio CD format, for burning CDs."

@@ -36,7 +36,7 @@ enum USBCheck {
             summary = tracks == 1 ? "The track plays on the \(player.name)" : "All \(tracks) tracks play on the \(player.name)"
         } else {
             summary = "\(tracks - unplayable) of \(tracks) \(tracks == 1 ? "track plays" : "tracks play") on the \(player.name). For the others, convert "
-                + "the original files with this player chosen, then put them on the stick again with rekordbox."
+                + "the original files with the format for this player, then put them on the stick again with rekordbox."
         }
         rows.append(Row(name: name, kind: .info, detail: summary, output: nil, checks: nil))
         return rows

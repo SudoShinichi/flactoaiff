@@ -466,7 +466,12 @@ enum TagIO {
             frames.append(.text(id: id, value: value))
         }
 
-        for (key, id) in textFrames { text(id, tags.value(key)) }
+        // Two keys can share a frame (ORGANIZATION and LABEL → TPUB): the second keeps its own TXXX.
+        var displaced: [String] = []
+        for (key, id) in textFrames {
+            guard let value = tags.value(key) else { continue }
+            if written.contains(id) { displaced.append(key) } else { text(id, value) }
+        }
         // v2.3 TYER holds a bare 4-digit year; DATE is often "2026-03-01", or "03.05.2026".
         if let date = tags.value("DATE") ?? tags.value("YEAR"),
            let year = date.range(of: "[0-9]{4}", options: .regularExpression) {
@@ -478,6 +483,10 @@ enum TagIO {
                                      tags.value("DISCTOTAL") ?? tags.value("TOTALDISCS")))
         if let comment = tags.value("COMMENT") ?? tags.value("DESCRIPTION") {
             frames.append(.comment(comment))
+        }
+        for key in displaced {
+            guard let value = tags.value(key), written.insert("TXXX:" + key).inserted else { continue }
+            frames.append(.userText(description: key, value: value))
         }
         for (key, _) in tags.comments where !handledKeys.contains(key) {
             guard let value = tags.value(key), !written.contains("TXXX:" + key) else { continue }

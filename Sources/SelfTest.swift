@@ -1,10 +1,12 @@
 #if TEST_HOOKS   // test.sh's own build only; the app never contains this
-import Foundation
+import AppKit
+import SwiftUI
 
-/// `--selftest <a convertible FLAC>`: checks the parts the command line bypasses, the settings
-/// (and their migration) and the queue's bookkeeping for the watch folder, on the real types.
+/// `--selftest <a convertible FLAC> <an AAC .m4a>`: checks the parts the command line bypasses,
+/// the settings (and their migration) and the queue's bookkeeping for the watch folder, on the
+/// real types. `--ideal-widths`: the widths the window's fixed rows need.
 enum SelfTest {
-    static func run(flac: URL) -> Bool {
+    static func run(flac: URL, aac: URL) -> Bool {
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent("flactoaiff-selftest-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temp) }
@@ -69,6 +71,16 @@ enum SelfTest {
         expect(idle(), "the queue finishes without Save to")
         expect(queue.rows.last?.retryable == true, "a missing Save to is marked for retry")
         expect(queue.oldestUnfinishedWatched == later, "a file that failed for a missing Save to is tried again")
+        queue.retryUnavailable()
+        expect(!queue.isWorking, "no retry while Save to is still missing")
+        s.outputFolder = temp.appendingPathComponent("plugged-in", isDirectory: true)
+        try? FileManager.default.createDirectory(at: s.outputFolder, withIntermediateDirectories: true)
+        queue.retryUnavailable()
+        expect(idle() && queue.rows.last?.kind == .converted, "a file kept for retry converts once Save to is back")
+        expect(queue.oldestUnfinishedWatched == nil, "a retried file no longer holds catch-up back")
+        s.outputFolder = temp.appendingPathComponent("unplugged", isDirectory: true)
+        queue.enqueueWatched([FolderWatcher.Ready(file: flac, arrived: later)], root: watchRoot)
+        expect(idle() && queue.oldestUnfinishedWatched == later, "a file kept for retry again")
         queue.forgetWatched()
         expect(queue.oldestUnfinishedWatched == nil, "a forgotten watch folder holds nothing back")
 
@@ -82,6 +94,31 @@ enum SelfTest {
         expect(idle(), "the queue finishes both sessions")
         expect(queue.oldestUnfinishedWatched == later, "the old session's job left the new session's file alone")
         queue.forgetWatched()
+
+        // An AAC download in the watch folder is skipped without a row; dropped, it gets one.
+        s.outputFolder = out
+        let rowsBeforeAAC = queue.rows.count
+        queue.enqueueWatched([FolderWatcher.Ready(file: aac, arrived: arrived)], root: aac.deletingLastPathComponent())
+        expect(idle() && queue.rows.count == rowsBeforeAAC, "an AAC file in the watch folder adds no row")
+        expect(queue.oldestUnfinishedWatched == nil, "a skipped AAC file counts as done")
+        queue.enqueue([aac])
+        expect(idle() && queue.rows.last?.kind == .skipped, "an AAC file dropped on the window gets its row")
+
+        // A USB check runs beside conversions instead of waiting for them.
+        let batch = temp.appendingPathComponent("batch", isDirectory: true), empty = temp.appendingPathComponent("empty")
+        try? FileManager.default.createDirectory(at: batch, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        for i in 0..<30 { try? FileManager.default.copyItem(at: flac, to: batch.appendingPathComponent("b\(i).flac")) }
+        s.outputFolder = temp.appendingPathComponent("batch-out", isDirectory: true)
+        try? FileManager.default.createDirectory(at: s.outputFolder, withIntermediateDirectories: true)
+        queue.enqueue([batch])
+        queue.check(empty, for: Player.named("cdj-3000")!)
+        let deadline = Date().addingTimeInterval(30)
+        while !queue.rows.contains(where: { $0.kind == .info && $0.name == "empty" }) && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        expect(queue.isConverting, "a USB check finishes while a conversion batch still runs")
+        expect(idle(), "the batch finishes")
 
         // A USB check is work, but not conversion: quitting during it loses nothing.
         queue.check(temp, for: Player.named("cdj-3000")!)
@@ -101,6 +138,14 @@ enum SelfTest {
 
         print(failures == 0 ? "SELFTEST passed" : "SELFTEST failed: \(failures)")
         return failures == 0
+    }
+
+    /// The widths the window's two fixed rows need: the Format menu with its longest title, and
+    /// the bottom bar. At the window's minimum of 400 pt less 2 × 16 pt padding, 368 pt fit.
+    static func idealWidths() -> [CGFloat] {
+        [NSHostingView(rootView: FormatPicker(format: .constant(.max96)).fixedSize()).fittingSize.width,
+         NSHostingView(rootView: ActionBar(canReveal: true, canClear: true, checkStick: { _ in }, reveal: {}, clear: {})
+            .fixedSize()).fittingSize.width]
     }
 }
 #endif

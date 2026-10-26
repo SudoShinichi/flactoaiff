@@ -13,11 +13,14 @@ final class ConversionQueue: ObservableObject {
 
     private let settings: Settings
     private let worker = DispatchQueue(label: "local.flactoaiff.conversion", qos: .userInitiated)   // serial
+    /// USB checks only read, so they run beside conversions instead of waiting behind them.
+    private let checker = DispatchQueue(label: "local.flactoaiff.usb-check", qos: .userInitiated)
     private var batchesInFlight = 0, conversionBatches = 0   // main thread only
-    /// Watched FLACs still waiting to convert (main thread only): when each arrived, and how
+    /// Watched files still waiting to convert (main thread only): when each arrived, and how
     /// many of its jobs are queued (a file that changed after a hand-off is handed off again).
-    /// Files that failed only because Save to was unavailable stay in here, to be tried again.
-    private var unfinishedWatched: [URL: (arrived: Date, jobs: Int)] = [:]
+    /// Files that failed only because Save to was unavailable stay in here with their watch
+    /// folder, `retryRoot`, to be tried again when Save to is back or at the next launch.
+    private var unfinishedWatched: [URL: (arrived: Date, jobs: Int, retryRoot: URL?)] = [:]
     private var watchSession = 0   // main thread only; jobs from a forgotten session don't count
 
     init(settings: Settings) { self.settings = settings }
@@ -43,13 +46,30 @@ final class ConversionQueue: ObservableObject {
         for f in files {
             // The date catch-up tests, so watchedUntil can't move past what it would find.
             let entry = unfinishedWatched[f.file]
-            unfinishedWatched[f.file] = (min(entry?.arrived ?? f.arrived, f.arrived), (entry?.jobs ?? 0) + 1)
+            unfinishedWatched[f.file] = (min(entry?.arrived ?? f.arrived, f.arrived), (entry?.jobs ?? 0) + 1, entry?.retryRoot)
         }
         let urls = files.map(\.file)
-        submit(quietSkips: quietSkips, watchSession: watchSession) { root in Jobs.watched(urls, root: watchRoot, into: root) }
+        submit(quietSkips: quietSkips, watchSession: watchSession, watchRoot: watchRoot) { root in
+            Jobs.watched(urls, root: watchRoot, into: root)
+        }
     }
 
-    private func submit(quietSkips: Bool = false, watchSession session: Int? = nil, _ makeItems: @escaping (URL) -> [WorkItem]) {
+    /// Save to may be back (a drive mounted, another folder chosen): try the watched files that
+    /// failed because it was missing (main thread). Nothing happens while it's still missing.
+    func retryUnavailable() {
+        var isDir: ObjCBool = false
+        let root = settings.outputFolder
+        guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDir), isDir.boolValue,
+              FileManager.default.isWritableFile(atPath: root.path) else { return }
+        let waiting = unfinishedWatched.filter { $0.value.jobs == 0 && $0.value.retryRoot != nil }
+        for (watchRoot, files) in Dictionary(grouping: waiting, by: { $0.value.retryRoot! }) {
+            let ready = files.map { FolderWatcher.Ready(file: $0.key, arrived: $0.value.arrived) }
+            enqueueWatched(ready.sorted { $0.file.path.localizedStandardCompare($1.file.path) == .orderedAscending }, root: watchRoot)
+        }
+    }
+
+    private func submit(quietSkips: Bool = false, watchSession session: Int? = nil, watchRoot: URL? = nil,
+                        _ makeItems: @escaping (URL) -> [WorkItem]) {
         let root = settings.outputFolder
         let options = ConvertOptions(mode: settings.format)
         batchesInFlight += 1
@@ -59,10 +79,12 @@ final class ConversionQueue: ObservableObject {
         worker.async {
             for item in makeItems(root) {
                 let row = autoreleasepool { Jobs.run(item, outputRoot: root, options: options) }   // free each file's temporaries before the next
-                if let session = session, case .job(let job) = item, !row.retryable {
-                    DispatchQueue.main.async { if session == self.watchSession { self.finishedWatched(job.source) } }
+                if let session = session, case .job(let job) = item {
+                    let retryRoot = row.retryable ? watchRoot : nil
+                    DispatchQueue.main.async { if session == self.watchSession { self.finishedWatched(job.source, retryRoot: retryRoot) } }
                 }
                 if quietSkips && row.kind == .alreadyConverted { continue }
+                if session != nil && row.routine { continue }   // an AAC download in the watch folder
                 DispatchQueue.main.async { self.append([row]) }
             }
             DispatchQueue.main.async {
@@ -77,7 +99,7 @@ final class ConversionQueue: ObservableObject {
     func check(_ folder: URL, for player: Player) {
         batchesInFlight += 1
         isWorking = true
-        worker.async {
+        checker.async {
             let rows = USBCheck.run(folder, on: player)
             DispatchQueue.main.async { self.append(rows); self.batchFinished() }
         }
@@ -93,9 +115,16 @@ final class ConversionQueue: ObservableObject {
         if batchesInFlight == 0 { isWorking = false }
     }
 
-    private func finishedWatched(_ file: URL) {
+    /// One job for a watched file is done. `retryRoot`: it failed because Save to was missing,
+    /// so the file stays, to be tried again from that watch folder.
+    private func finishedWatched(_ file: URL, retryRoot: URL?) {
         guard let entry = unfinishedWatched[file] else { return }
-        unfinishedWatched[file] = entry.jobs > 1 ? (entry.arrived, entry.jobs - 1) : nil
+        let jobs = entry.jobs - 1
+        if let retryRoot {
+            unfinishedWatched[file] = (entry.arrived, jobs, retryRoot)
+        } else {
+            unfinishedWatched[file] = jobs > 0 ? (entry.arrived, jobs, entry.retryRoot) : nil
+        }
     }
 
     /// The watch folder changed or watching stopped: its files no longer hold catch-up back.

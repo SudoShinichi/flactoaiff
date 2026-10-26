@@ -46,7 +46,12 @@ func cliStopOnSignals() {
 }
 
 #if TEST_HOOKS
-if cliArgs.count == 3 && cliArgs[1] == "--selftest" { exit(SelfTest.run(flac: URL(fileURLWithPath: cliArgs[2])) ? 0 : 1) }
+if cliArgs.count == 4 && cliArgs[1] == "--selftest" {
+    exit(SelfTest.run(flac: URL(fileURLWithPath: cliArgs[2]), aac: URL(fileURLWithPath: cliArgs[3])) ? 0 : 1)
+}
+if cliArgs.count == 2 && cliArgs[1] == "--ideal-widths" {
+    print(SelfTest.idealWidths().map { String(Int($0.rounded(.up))) }.joined(separator: " ")); exit(0)
+}
 #endif
 
 if cliArgs.count >= 2 && cliArgs[1] == "--check" {
@@ -120,16 +125,15 @@ struct DropView: View {
         VStack(spacing: 12) {
             dropZone
             settingsBar
-            if !queue.rows.isEmpty && !queue.isWorking {
-                HStack {
-                    Button("Reveal in Finder") {
-                        NSWorkspace.shared.activateFileViewerSelecting(queue.outputs)
-                    }
-                    .disabled(queue.outputs.isEmpty)
-                    Spacer()
-                    Button("Clear") { queue.clear() }
-                }
-            }
+            ActionBar(canReveal: !queue.outputs.isEmpty && !queue.isWorking,
+                      canClear: !queue.rows.isEmpty && !queue.isWorking,
+                      checkStick: { player in
+                          if let url = pickFolder(startingAt: URL(fileURLWithPath: "/Volumes"), prompt: "Check") {
+                              queue.check(url, for: player)
+                          }
+                      },
+                      reveal: { NSWorkspace.shared.activateFileViewerSelecting(queue.outputs) },
+                      clear: { queue.clear() })
         }
         .padding(16)
         .frame(minWidth: 400, minHeight: 400)
@@ -171,27 +175,7 @@ struct DropView: View {
                 }
                 Spacer()
             }
-            HStack {
-                Picker("Format:", selection: $settings.format) {
-                    ForEach(OutputMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-                .pickerStyle(.menu)
-                .fixedSize()
-                Spacer()
-                Menu("Check USB Stick") {
-                    ForEach(Player.all) { player in
-                        Button("For \(player.name)…") {
-                            if let url = pickFolder(startingAt: URL(fileURLWithPath: "/Volumes"), prompt: "Check") {
-                                queue.check(url, for: player)
-                            }
-                        }
-                    }
-                }
-                .fixedSize()
-                .help("List the tracks on a stick that a player won't play. Nothing on the stick is changed.")
-            }
+            FormatPicker(format: $settings.format)
             Text(settings.format.explanation)
                 .font(.caption)
                 .foregroundColor(.secondary)
@@ -300,6 +284,43 @@ struct DropView: View {
     }
 }
 
+/// The Format menu.
+struct FormatPicker: View {
+    @Binding var format: OutputMode
+
+    var body: some View {
+        Picker("Format:", selection: $format) {
+            ForEach(OutputMode.allCases) { mode in
+                Text(mode.title).tag(mode)
+            }
+        }
+        .pickerStyle(.menu)
+        .fixedSize()
+        .font(.callout)
+    }
+}
+
+/// The window's bottom row: the USB check, and what to do with the rows.
+struct ActionBar: View {
+    let canReveal: Bool, canClear: Bool
+    let checkStick: (Player) -> Void, reveal: () -> Void, clear: () -> Void
+
+    var body: some View {
+        HStack {
+            Menu("Check USB Stick") {
+                ForEach(Player.all) { player in
+                    Button("For \(player.name)…") { checkStick(player) }
+                }
+            }
+            .fixedSize()
+            .help("List the tracks on a stick that a player won't play. Nothing on the stick is changed.")
+            Spacer()
+            Button("Reveal in Finder", action: reveal).disabled(!canReveal)
+            Button("Clear", action: clear).disabled(!canClear)
+        }
+    }
+}
+
 private extension Row.Kind {
     var symbol: String {
         switch self {
@@ -329,6 +350,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let watchState = WatchState()
     private var watchGeneration = 0   // batches from a replaced or stopped watcher are dropped
     private var watchSubscription: AnyCancellable?
+    private var outputSubscription: AnyCancellable?
     private var watchTimer: Timer?
     private var volumeObservers: [NSObjectProtocol] = []
 
@@ -363,11 +385,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         watchTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             self?.recordWatchedUntil()
             self?.followWatchFolder()
+            self?.queue.retryUnavailable()
         }
         // A watch folder on a drive that mounts after launch, or is ejected and comes back.
         let center = NSWorkspace.shared.notificationCenter
         volumeObservers = [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification].map {
-            center.addObserver(forName: $0, object: nil, queue: .main) { [weak self] _ in self?.followWatchFolder() }
+            center.addObserver(forName: $0, object: nil, queue: .main) { [weak self] _ in
+                self?.followWatchFolder()
+                self?.queue.retryUnavailable()   // Save to's drive may be the one that came back
+            }
+        }
+        outputSubscription = settings.$outputFolder.dropFirst().receive(on: RunLoop.main).sink { [weak self] _ in
+            self?.queue.retryUnavailable()
         }
     }
 
