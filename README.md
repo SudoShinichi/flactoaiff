@@ -344,11 +344,17 @@ FlacToAiff.app/Contents/MacOS/FlacToAiff --check   --player <name> <folder>
 
 | File | Purpose |
 | --- | --- |
-| `Sources/main.swift` | Window, settings bar, app delegate, command-line modes |
+| `Sources/main.swift` | Entry point: a command-line mode, or the app |
+| `Sources/CLI.swift` | Command-line output and usage |
+| `Sources/DropView.swift` | The window: drop zone, settings, rows, bottom bar |
+| `Sources/AppDelegate.swift` | App start, watch folder, drives, menus, quitting |
 | `Sources/AudioSource.swift` | Input formats, one type each (FLAC, WAV, ALAC) |
 | `Sources/Players.swift` | What each player plays, with sources; the Format menu's texts |
 | `Sources/Converter.swift` | Output format, `afconvert`, saving without overwriting |
-| `Sources/Tags.swift` | Header and tag reading for each format, ID3 writing, AIFF reading |
+| `Sources/Tags.swift` | The tag and format models shared by the files below |
+| `Sources/FlacTags.swift`, `WavTags.swift`, `MP4Tags.swift` | Reading each input format's header and tags |
+| `Sources/ID3.swift` | Reading ID3v2.3/v2.4 tags, building the ID3v2.3 tag for the AIFF |
+| `Sources/AIFF.swift` | Reading an AIFF's format and recorded source, adding the ID3 chunk |
 | `Sources/Verifier.swift` | Format, length, audio and tag checks |
 | `Sources/USBCheck.swift` | The USB check (read-only) |
 | `Sources/Jobs.swift` | Turns dropped files and folders into conversions |
