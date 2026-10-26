@@ -45,6 +45,7 @@ CDJ-2000NXS2 all play FLAC), you may not need this app.
   any check is not saved. See [Results](#results) for what each label means.
 - **Watch folder.** New files in a folder you choose, such as your downloads folder, are
   converted while the app is open.
+- **Fast on big batches.** Up to four files convert at once when saving to the Mac's own drive.
 - **USB check.** Lists the tracks on a USB stick that a chosen player won't play, without
   changing anything on the stick.
 - **Safe with existing files.** Nothing is ever overwritten, and an unfinished AIFF never
@@ -55,9 +56,9 @@ CDJ-2000NXS2 all play FLAC), you may not need this app.
 
 FlacToAiff is a young, single-developer project.
 
-- There is no signed or notarized download yet. You build the app yourself (see below).
-- The player limits are based on the manufacturers' manuals and spec sheets. They have not yet
-  been tested on every player. Check your player's manual if a track matters.
+- There is no signed or notarized download yet, so you build the app yourself (below).
+- The player limits come from the manufacturers' manuals and spec sheets. They haven't been tested
+  on every player, so check your player's manual if a track matters.
 
 ## Installation
 
@@ -74,18 +75,24 @@ Then drag `build/FlacToAiff.app` into `/Applications`.
 
 **Requirements:** macOS 12 Monterey or later, on Apple Silicon or Intel (universal binary).
 
+**Updating:** run `git pull` and `./build.sh` again, then replace the app in `/Applications`.
+Your settings are kept.
+
+**Uninstalling:** delete the app. To remove its settings too, run
+`defaults delete local.flactoaiff`.
+
 ## Usage
 
 Open FlacToAiff and drag `.flac`, `.wav` or `.m4a` (Apple Lossless) files or folders onto the
 window. The AIFFs are saved to the **Save to** folder, which is Downloads by default.
 
-When **Save to** is on the Mac's own drive, up to four files convert at once (half the processor
-cores, at most four), so big batches finish several times faster. On USB sticks, external drives and
-network shares they convert one at a time, which those drives handle better.
-
 You can also drop files onto the Dock icon, even while the app isn't running, or right-click them
 in Finder and choose **Open With → FlacToAiff**. FlacToAiff never makes itself the default app for
 any file type.
+
+When **Save to** is on the Mac's own drive, several files convert at once: half the processor
+cores, at most four. On USB sticks, external drives and network shares, files convert one at a
+time, which those drives handle better.
 
 ### Settings
 
@@ -95,8 +102,10 @@ any file type.
 | **Watch** | A folder whose new files convert automatically (see [Watch folder](#watch-folder)). |
 | **Format** | The sample rate and bit depth limit (see [Formats](#formats)). The text under the menu names the players each choice is for. |
 
-A changed setting applies to files you add afterwards. Files already queued keep the settings
-they were added with.
+- A changed setting applies to files you add afterwards. Files already queued keep the settings
+  they were added with.
+- **Save to** and **Watch** are found again after they're renamed or moved, the way Finder aliases
+  are, including on a USB stick that gets a new name.
 
 ### Formats
 
@@ -158,8 +167,8 @@ and their subfolders are kept: `Watch/Album/01.flac` becomes `Save to/Album/01.a
 
 ### USB check
 
-Click **Check USB Stick** at the bottom of the window, choose your player, then choose a stick or a folder on it. The window
-lists each track that player won't play, and why:
+Click **Check USB Stick** at the bottom of the window, choose your player, then choose a stick
+or a folder on it. The window lists each track that player won't play, and why:
 
 - a format it doesn't play, such as FLAC on a CDJ-2000NXS, or OGG
 - a sample rate or bit depth above its limit
@@ -177,9 +186,9 @@ These limits, and where each comes from, are in `Sources/Players.swift`.
 It also warns when the stick itself is a problem: no player listed here reads APFS or NTFS, and
 only some read exFAT. The last row says how many tracks will play.
 
-The check never changes the stick. Replacing tracks on a stick breaks its rekordbox export, so the
-fix is to convert the original files in the format for that player, then export them to the stick again
-with rekordbox. **Reveal in Finder** selects the tracks that won't play.
+The check never changes the stick. Replacing tracks on a stick breaks its rekordbox export, so
+the fix is to convert the original files with the format for that player, then export them to the
+stick again with rekordbox. **Reveal in Finder** selects the tracks that won't play.
 
 ### Tags
 
@@ -214,6 +223,26 @@ comment, copyright, grouping, compilation, track and disc numbers, BPM, cover ar
 fields such as `INITIALKEY`. Genres that older iTunes versions stored as a number are written
 out as text. Gapless and volume data (`iTunSMPB`, `iTunNORM`) is player data and isn't copied.
 
+## Command line
+
+The app's binary also converts, watches and checks without opening a window, for scripts:
+
+```bash
+FlacToAiff.app/Contents/MacOS/FlacToAiff --convert [--format original|max96|max48|cd] <file-or-folder>... <output-dir>
+FlacToAiff.app/Contents/MacOS/FlacToAiff --watch   [--format …] <watch-dir> <output-dir>
+FlacToAiff.app/Contents/MacOS/FlacToAiff --check   --player <name> <folder>
+# <name>: cdj-3000, cdj-2000nxs2, opus-quad, xdj-1000mk2, xdj-rx3, cdj-2000nxs
+```
+
+| Output | Meaning |
+| --- | --- |
+| `OK <path>`, tab, label | Converted (followed by a `NOTE` line if a custom tag was left out) |
+| `SKIP <path>` | Already converted |
+| `NOTE <name>: <text>` | A `--check` summary or note |
+| `ERROR <name>: <reason>` (stderr) | Failed or won't play; the exit status is 1 |
+
+`--watch` runs until it's stopped with Ctrl-C.
+
 ## How it works
 
 1. **Convert.** `afconvert` decodes the source into a hidden temporary file in the output folder.
@@ -233,7 +262,6 @@ out as text. Gapless and volume data (`iTunSMPB`, `iTunNORM`) is player data and
 
 ## Limitations
 
-- **No signed release.** You build the app yourself.
 - **FLAC, WAV and ALAC input only.** Other formats are skipped.
   - An `.m4a` holding AAC is skipped, because as AIFF it would only be 5–10 times larger.
   - Floating-point and compressed WAVs are skipped, because they can't become a lossless AIFF.
@@ -252,6 +280,8 @@ out as text. Gapless and volume data (`iTunSMPB`, `iTunNORM`) is player data and
   arrived while the app was open may convert it again.
 
 ## Troubleshooting
+
+A red row's message says what went wrong. The common ones:
 
 **"FLAC is incomplete — only N% of the audio is there"** (or "WAV is incomplete"). The file is
 shorter than its header says: it's still downloading or copying, or the download broke off. Wait
@@ -291,9 +321,6 @@ are tried again as soon as the folder is back, or at the next launch.
 Watching resumes by itself when the drive is back. A deleted folder has to be chosen again under
 **Watch**.
 
-Folders that are renamed or moved, including a USB stick that gets a new name, are found again
-by themselves: the app remembers them the way Finder aliases do.
-
 **macOS says the app can't be opened.** Apps you build yourself open normally. A copy that came by
 download or AirDrop is quarantined: right-click it and choose **Open** once, or run
 `xattr -dr com.apple.quarantine FlacToAiff.app`.
@@ -319,28 +346,14 @@ and ALAC files it generates itself. They cover:
 - the watch folder
 - the USB check, on FAT32 and exFAT disk images and an APFS folder
 - saving to an exFAT volume
-- the settings and the conversion queue, through a `--selftest` mode (below)
+- the settings, the conversion queue and the window's minimum width
 
-A separate test binary, built with `-D TEST_HOOKS`, reaches failure paths that real files can't
-trigger. It also has a `--selftest` mode for what the command line bypasses: the settings,
-including the migration from older versions, and the queue's bookkeeping for the watch folder.
-Neither is ever compiled into the app.
+Some of these need a separate test binary, built with `-D TEST_HOOKS`. It reaches failure paths
+that real files can't trigger, and its `--selftest` mode covers what the command line bypasses:
+the settings and their migration from older versions, folders found again after a move, and the
+queue's bookkeeping. None of this is compiled into the app.
 
-The app also runs from the command line:
-
-```bash
-FlacToAiff.app/Contents/MacOS/FlacToAiff --convert [--format original|max96|max48|cd] <file-or-folder>... <output-dir>
-FlacToAiff.app/Contents/MacOS/FlacToAiff --watch   [--format …] <watch-dir> <output-dir>
-FlacToAiff.app/Contents/MacOS/FlacToAiff --check   --player <name> <folder>
-# <name>: cdj-3000, cdj-2000nxs2, opus-quad, xdj-1000mk2, xdj-rx3, cdj-2000nxs
-```
-
-| Output | Meaning |
-| --- | --- |
-| `OK <path>`, tab, label | Converted (followed by a `NOTE` line if a custom tag was left out) |
-| `SKIP <path>` | Already converted |
-| `NOTE <name>: <text>` | A `--check` summary or note |
-| `ERROR <name>: <reason>` (stderr) | Failed or won't play; the exit status is 1 |
+### Source files
 
 | File | Purpose |
 | --- | --- |
