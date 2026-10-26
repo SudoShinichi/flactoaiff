@@ -7,6 +7,7 @@ enum ConvertError: Error, CustomStringConvertible {
     case outputFolderUnavailable
     case verificationFailed(String)
     case nameTaken(String)   // the AIFF's name, held by an AIFF made from another file
+    case customTagsUnreadable([String])   // TXXX descriptions that didn't read back; the converter leaves them out
 
     var description: String {
         switch self {
@@ -14,6 +15,8 @@ enum ConvertError: Error, CustomStringConvertible {
             return message
         case .outputFolderUnavailable:
             return "Output folder not available — choose another in “Save to”"
+        case .customTagsUnreadable(let names):
+            return "Tag check failed: \(names.joined(separator: ", "))"
         case .nameTaken(let name):
             return "\(name) already exists, made from a different file — rename one of them and add it again"
         }
@@ -22,7 +25,8 @@ enum ConvertError: Error, CustomStringConvertible {
 
 /// What a single conversion did.
 enum Outcome {
-    case converted(URL, note: String?, checks: Checks)   // note: what wasn't lossless, e.g. "96 → 48 kHz"
+    // note: what wasn't lossless, e.g. "96 → 48 kHz"; warning: something the AIFF lacks, said in the row.
+    case converted(URL, note: String?, checks: Checks, warning: String?)
     case alreadyConverted(URL)
 }
 
@@ -168,12 +172,26 @@ enum Converter {
 
                 // afconvert drops all tags; carry title/artist/album/cover etc. over as an ID3 chunk,
                 // with a record of the source for telling same-named files apart later.
-                let frames = TagIO.id3Frames(input.tags()) + [.userText(description: TagIO.sourceKey, value: input.fingerprint)]
+                var frames = TagIO.id3Frames(input.tags()) + [.userText(description: TagIO.sourceKey, value: input.fingerprint)]
+                let audioOnly = (try FileManager.default.attributesOfItem(atPath: tmp.path)[.size] as? NSNumber)?.uint64Value ?? 0
                 if let tag = TagIO.id3v23(frames) {
                     try TagIO.appendID3Chunk(tag, to: tmp)
                 }
 
-                let checks = try Verifier.verify(aiff: tmp, input: input, expected: format, writtenFrames: frames)
+                let checks: Checks
+                var warning: String?
+                do {
+                    checks = try Verifier.verify(aiff: tmp, input: input, expected: format, writtenFrames: frames)
+                } catch ConvertError.customTagsUnreadable(let names) {
+                    // A custom field that doesn't read back isn't worth losing the file over: write
+                    // the tag again without it, check everything again, and say what's missing.
+                    frames.removeAll { if case .userText(let d, _) = $0 { return names.contains(d) }; return false }
+                    try TagIO.truncateAIFF(tmp, to: audioOnly)
+                    if let tag = TagIO.id3v23(frames) { try TagIO.appendID3Chunk(tag, to: tmp) }
+                    checks = try Verifier.verify(aiff: tmp, input: input, expected: format, writtenFrames: frames)
+                    warning = names.count == 1 ? "custom tag \(names[0]) left out — it didn't read back"
+                        : "custom tags \(names.joined(separator: ", ")) left out — they didn't read back"
+                }
 
                 guard try publish(tmp, as: final) else {
                     try? FileManager.default.removeItem(at: tmp)
@@ -181,7 +199,7 @@ enum Converter {
                     return try existing(final, for: input)
                 }
                 inFlight.remove(temp: tmp)
-                return .converted(final, note: reductionNote(source, format), checks: checks)
+                return .converted(final, note: reductionNote(source, format), checks: checks, warning: warning)
             } catch {
                 try? FileManager.default.removeItem(at: tmp)
                 inFlight.remove(temp: tmp)

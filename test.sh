@@ -1018,4 +1018,36 @@ import sys; d = open(sys.argv[1], 'rb').read(); u = lambda s: s.encode('utf-16-l
 assert b'TPUB' in d and u('Publisher') in d and u('LABEL') in d and u('Imprint') in d" "$R50/pout/pub.aiff" \
     || { echo "FAIL: LABEL was dropped beside ORGANIZATION"; exit 1; }
 
+echo "51. Tags in an ID3 block in front of a FLAC are used; a custom tag that doesn't read back is left out, not fatal…"
+R51="$TMP/r51"; mkdir -p "$R51"
+# A FLAC without Vorbis tags whose tags (and cover) sit in a leading ID3v2.3 block.
+python3 -I - "$TMP/tone.flac" "$R51/id3only.flac" <<'PY'
+import sys
+def frame(fid, body): return fid + len(body).to_bytes(4, 'big') + b'\0\0' + body
+jpg = bytes.fromhex('ffd8ffe000104a46494600010100000100010000ffd9')
+fr = (frame(b'TIT2', b'\0Song Title') + frame(b'TPE1', b'\0Some Artist') + frame(b'TALB', b'\x01' + '﻿Album 蒸發'.encode('utf-16-le'))
+      + frame(b'TXXX', b'\0MOOD\0calm') + frame(b'APIC', b'\0image/jpeg\0\x03\0' + jpg))
+n = len(fr)
+tag = b'ID3\x03\0\0' + bytes([n >> 21 & 127, n >> 14 & 127, n >> 7 & 127, n & 127]) + fr
+open(sys.argv[2], 'wb').write(tag + open(sys.argv[1], 'rb').read())
+PY
+[ "$("$BIN" --convert "$R51/id3only.flac" "$R51/out")" = "OK $R51/out/id3only.aiff${TAB}verified" ] || { echo "FAIL: FLAC with tags only in its ID3 block not verified"; exit 1; }
+check_tags "$R51/out/id3only.aiff" || { echo "FAIL: the leading ID3 block's tags weren't used"; exit 1; }
+python3 -I -c "
+import sys; d = open(sys.argv[1], 'rb').read()
+assert bytes.fromhex('ffd8ffe000104a46494600010100000100010000ffd9') in d and 'calm'.encode('utf-16-le') in d" "$R51/out/id3only.aiff" \
+    || { echo "FAIL: the leading ID3 block's cover or custom tag wasn't used"; exit 1; }
+
+# A custom (TXXX) field that doesn't read back is left out, and the row says so; named fields still block.
+tag_flac "$TMP/tone.flac" "$R51/mood.flac" MOOD=calm CATALOG=X1
+OUT51="$(FLACTOAIFF_TEST_DAMAGE=customtag "$HOOKBIN" --convert "$R51/mood.flac" "$R51/m")"
+[ "$(head -1 <<<"$OUT51")" = "OK $R51/m/mood.aiff${TAB}verified" ] \
+    && grep -q "^NOTE mood.flac: custom tag MOOD left out — it didn't read back" <<<"$OUT51" \
+    || { echo "FAIL: an unreadable custom tag should be left out with a note:"; echo "$OUT51"; exit 1; }
+python3 -I -c "
+import sys; d = open(sys.argv[1], 'rb').read(); u = lambda s: s.encode('utf-16-le')
+assert u('MOOD') not in d and u('CATALOG') in d and u('Song Title') in d" "$R51/m/mood.aiff" \
+    || { echo "FAIL: MOOD should be gone and the other tags kept"; exit 1; }
+check_tags "$R51/m/mood.aiff" || { echo "FAIL: the named tags didn't survive leaving MOOD out"; exit 1; }
+
 echo "PASS: all checks."
