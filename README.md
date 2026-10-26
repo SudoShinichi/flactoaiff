@@ -79,6 +79,10 @@ Then drag `build/FlacToAiff.app` into `/Applications`.
 Open FlacToAiff and drag `.flac`, `.wav` or `.m4a` (Apple Lossless) files or folders onto the
 window. The AIFFs are saved to the **Save to** folder, which is Downloads by default.
 
+When **Save to** is on the Mac's own drive, up to four files convert at once (half the processor
+cores, at most four), so big batches finish several times faster. On USB sticks, external drives and
+network shares they convert one at a time, which those drives handle better.
+
 You can also drop files onto the Dock icon, even while the app isn't running, or right-click them
 in Finder and choose **Open With → FlacToAiff**. FlacToAiff never makes itself the default app for
 any file type.
