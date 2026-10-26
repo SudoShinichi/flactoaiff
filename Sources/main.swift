@@ -48,6 +48,10 @@ func cliStopOnSignals() {
     }
 }
 
+#if TEST_HOOKS
+if cliArgs.count == 3 && cliArgs[1] == "--selftest" { exit(SelfTest.run(flac: URL(fileURLWithPath: cliArgs[2])) ? 0 : 1) }
+#endif
+
 if cliArgs.count >= 2 && cliArgs[1] == "--check" {
     // --check --player <name> <folder>: exit 1 when the player can't read the stick or a track.
     let args = Array(cliArgs.dropFirst(2))
@@ -193,7 +197,7 @@ struct DropView: View {
             if !settings.player.plays.isEmpty {
                 HStack {
                     Toggle("Skip files the player already plays", isOn: $settings.skipPlayable)
-                        .help("Leave files alone that the \(settings.player.name) plays as they are, instead of making AIFFs of them")
+                        .help("Files the \(settings.player.name) plays as they are stay where they are: no AIFF is made, and nothing is copied to Save to")
                     Spacer()
                     Button("Check USB Stick…") {
                         if let url = pickFolder(startingAt: URL(fileURLWithPath: "/Volumes"), prompt: "Check") {

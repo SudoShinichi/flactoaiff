@@ -132,7 +132,7 @@ enum Jobs {
                 return Row(name: name, kind: .skipped, detail: reason, output: nil, checks: nil)
             }
             if let player = options.skipPlayableOn, player.playsAsIs(source) {
-                return Row(name: name, kind: .leftAlone, detail: "Plays as is on the \(player.name) — not converted",
+                return Row(name: name, kind: .leftAlone, detail: "Plays as is on the \(player.name) — left where it is, not copied to Save to",
                            output: nil, checks: nil)
             }
             do {
